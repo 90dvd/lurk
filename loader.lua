@@ -11,7 +11,7 @@
 local LOADER_VERSION = "5"
 local BASE = "https://raw.githubusercontent.com/90dvd/lurk/main/Scripts/Bedwars.lua"
 -- Bypasses raw.githubusercontent.com/main/ CDN lag (update on each release).
-local FALLBACK = "https://raw.githubusercontent.com/90dvd/lurk/9275ade/Scripts/Bedwars.lua"
+local FALLBACK = "https://raw.githubusercontent.com/90dvd/lurk/4b7e8cf/Scripts/Bedwars.lua"
 local CACHE = "lurk/Bedwars.lua"
 local MIN_VERSION = "1.6.8"
 
