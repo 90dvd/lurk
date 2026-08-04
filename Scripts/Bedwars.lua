@@ -614,7 +614,7 @@ Config.path = "lurk/config.json"
 -- mergeDefaults only fills in missing keys, so a saved config would keep an old
 -- value forever after a default changes. Bump this whenever that must not
 -- happen and the stored file gets discarded instead.
-Config.version = 7
+Config.version = 8
 
 Config.defaults = {
 	version = Config.version,
@@ -642,6 +642,9 @@ function Config.load()
 	else
 		Config.data = Util.mergeDefaults(decoded, Config.defaults)
 	end
+
+	-- Always back-fill nested feature tables (e.g. diamondEsp added after v7).
+	Config.data = Util.mergeDefaults(Config.data, Config.defaults)
 
 	return Config.data
 end
@@ -1079,7 +1082,7 @@ do
 				if pathOk and not isExcluded(path) and not pathMatches(path, spec.rejectPath) then
 					local root, part, minimum, maximum, center, span
 
-					if spec.simplePart and descendant:IsA("BasePart") then
+					if spec.simplePart and isDropPart(descendant) then
 						part = descendant
 						local position, size = partExtents(part)
 						if position then
@@ -1471,6 +1474,16 @@ do
 
 		function tracker.init()
 			local settings = Config.data[spec.settingsKey]
+			if not settings then
+				local defaults = Config.defaults[spec.settingsKey]
+				if defaults then
+					settings = Util.copy(defaults)
+					Config.data[spec.settingsKey] = settings
+				else
+					Log.error(spec.settingsKey .. " has no config defaults")
+					return
+				end
+			end
 
 			if settings.toggleKey then
 				Input.bind(settings.toggleKey, function()
@@ -1479,7 +1492,11 @@ do
 				end)
 			end
 
-			local lastCount = -1
+			tracker.entries = tracker.scan()
+			local lastCount = #tracker.entries
+			Log.info(string.format("%s: %d drawn, %s candidate(s)",
+				spec.settingsKey, lastCount, tostring(tracker.stats.candidates)))
+
 			Runtime.every(settings.rescanInterval, function()
 				tracker.entries = tracker.scan()
 				if #tracker.entries ~= lastCount then
@@ -1507,6 +1524,10 @@ do
 		return tracker
 	end
 
+	local function isDropPart(instance)
+		return instance:IsA("BasePart") or instance:IsA("MeshPart")
+	end
+
 	local function itemDropScanList()
 		local drops = Workspace and Workspace:FindFirstChild("ItemDrops")
 		if not drops then
@@ -1523,12 +1544,17 @@ do
 			settingsKey = options.settingsKey,
 			title = options.title,
 			caption = options.caption,
-			simplePart = true,
 			live = true,
 			mergeRadius = 0,
 			scanList = itemDropScanList,
 			accept = function(instance, lowered)
-				return instance:IsA("BasePart") and lowered == options.oreName
+				if lowered ~= options.oreName then
+					return nil
+				end
+				if isDropPart(instance) or instance:IsA("Model") then
+					return "drop"
+				end
+				return nil
 			end,
 			decorate = function(entry)
 				local ok, amount = pcall(function()
@@ -1585,6 +1611,16 @@ do
 		caption = "DIAMOND",
 		oreName = "diamond",
 	}))
+
+	function Features.listItemDrops()
+		Log.info("Workspace.ItemDrops:")
+		for _, child in pairs(itemDropScanList()) do
+			local pathOk, path = pcall(function()
+				return child:GetFullName()
+			end)
+			Log.info(string.format("  [%s] %s", child.ClassName, pathOk and path or child.Name))
+		end
+	end
 end
 
 --=============================================================================
