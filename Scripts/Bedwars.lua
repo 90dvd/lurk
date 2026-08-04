@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.6.4"
+local SCRIPT_VERSION = "1.6.5"
 
 --=============================================================================
 -- Environment
@@ -703,6 +703,22 @@ function Config.save()
 		Log.warn("config write failed")
 	end
 	return written
+end
+
+Config._saveToken = 0
+
+function Config.scheduleSave()
+	if not Env.hasFilesystem then
+		return
+	end
+	Config._saveToken = Config._saveToken + 1
+	local token = Config._saveToken
+	task.spawn(function()
+		wait(0.35)
+		if token == Config._saveToken and Runtime.running then
+			Config.save()
+		end
+	end)
 end
 
 --=============================================================================
@@ -2318,47 +2334,6 @@ do
 	GUI.controls = {}
 	GUI.menuReady = false
 
-	local LurkCollapse = { groups = {} }
-
-	function LurkCollapse.register(groupId, header, children)
-		LurkCollapse.groups[groupId] = {
-			expanded = false,
-			header = header,
-			children = children,
-		}
-		header._lurkCollapseGroup = groupId
-		for _, child in ipairs(children) do
-			child._lurkHidden = true
-		end
-		if type(header.SetDescription) == "function" then
-			header:SetDescription("Click title to expand options")
-		end
-	end
-
-	function LurkCollapse.toggle(groupId)
-		local group = LurkCollapse.groups[groupId]
-		if not group then
-			return
-		end
-		group.expanded = not group.expanded
-		for _, child in ipairs(group.children) do
-			child._lurkHidden = not group.expanded
-		end
-		if group.header and type(group.header.SetDescription) == "function" then
-			if group.expanded then
-				group.header:SetDescription("Click title to collapse")
-			else
-				group.header:SetDescription("Click title to expand options")
-			end
-		end
-	end
-
-	function LurkCollapse.clear()
-		LurkCollapse.groups = {}
-	end
-
-	_G.LurkCollapse = LurkCollapse
-
 	local FEATURE_PANELS = {
 		{
 			settingsKey = "bedEsp",
@@ -2422,38 +2397,49 @@ do
 		end
 	end
 
-	local function addCollapsibleFeature(tab, panel)
+	local function addFeatureSection(tab, panel)
 		local featureSettings = Config.data[panel.settingsKey]
 		if not featureSettings then
 			return
 		end
 
-		local header = tab:AddToggle({
-			Title = panel.title,
-			Description = "Click title to expand options",
+		local section = tab:AddSection(panel.title)
+
+		local header = section:AddToggle({
+			Title = "Enabled",
 			Default = featureSettings.enabled == true,
 			Callback = function(enabled)
 				featureSettings.enabled = enabled
-				Config.save()
+				Config.scheduleSave()
 			end,
 		})
 		GUI.controls[panel.settingsKey .. ".enabled"] = header
 
-		local children = {}
 		for _, option in ipairs(panel.options) do
-			local control = tab:AddToggle({
+			local control = section:AddToggle({
 				Title = option.title,
 				Default = featureSettings[option.key] == true,
 				Callback = function(enabled)
 					featureSettings[option.key] = enabled
-					Config.save()
+					Config.scheduleSave()
 				end,
 			})
-			children[#children + 1] = control
 			GUI.controls[panel.settingsKey .. "." .. option.key] = control
 		end
+	end
 
-		LurkCollapse.register(panel.settingsKey, header, children)
+	local function verifyPatchedSource(source)
+		local markers = {
+			{ "lurk: window chrome removed", "title bar removal" },
+			{ "lurk handles menu toggle", "menu key override" },
+			{ "State.ContentSlide.v = 0; State.ContentSlide.goal = 0", "tab animation disable" },
+		}
+		for _, marker in ipairs(markers) do
+			if not source:find(marker[1], 1, true) then
+				return false, marker[2]
+			end
+		end
+		return true
 	end
 
 	local function removeWindowChrome(source)
@@ -2518,48 +2504,6 @@ do
 		)
 
 		source = source:gsub(
-			"for _, el in ipairs%(g%.elements%) do\n                if el%.kind == \"paragraph\"",
-			"for _, el in ipairs(g.elements) do\n                if not el._lurkHidden then\n                if el.kind == \"paragraph\""
-		)
-
-		source = source:gsub(
-			"totalH = totalH %+ cardHeight%(el%) %+ gap\n            end\n        end\n        totalH = totalH %- gap",
-			"totalH = totalH + cardHeight(el) + gap\n                end\n            end\n        end\n        totalH = totalH - gap"
-		)
-
-		source = source:gsub(
-			"for _, el in ipairs%(g%.elements%) do\n                idx = idx %+ 1\n                local hh = cardHeight%(el%)",
-			"for _, el in ipairs(g.elements) do\n                if not el._lurkHidden then\n                idx = idx + 1\n                local hh = cardHeight(el)"
-		)
-
-		source = source:gsub(
-			"cy = cy %+ hh %+ gap\n            end\n        end\n\n        rect%(\"win%.hdrmask\"",
-			"cy = cy + hh + gap\n                end\n            end\n        end\n\n        rect(\"win.hdrmask\""
-		)
-
-		source = source:gsub(
-			[[        if hovered and Input.clicked and not chipHit then
-            el.value = not el.value
-            el.anim.goal = el.value and 1 or 0
-            safe(el.callback, el.value)
-            safe(el.changed, el.value)
-        end
-        springStep%(el%.anim, dt)]],
-			[[        if hovered and Input.clicked and not chipHit then
-            local pillHit = not block and inBounds(px, py, pillW, pillH)
-            if el._lurkCollapseGroup and _G.LurkCollapse and not pillHit then
-                _G.LurkCollapse.toggle(el._lurkCollapseGroup)
-            else
-                el.value = not el.value
-                el.anim.goal = el.value and 1 or 0
-                safe(el.callback, el.value)
-                safe(el.changed, el.value)
-            end
-        end
-        springStep(el.anim, dt)]]
-		)
-
-		source = source:gsub(
 			[[        if hovered and Input.clicked and not active then
             State.ActiveTab = i; State.Overlay = nil; State.Focused = nil; State.TabCurtain.v = 1
             State.ContentSlide.v = 14; State.ContentSlide.goal = 0
@@ -2619,6 +2563,12 @@ do
 		end
 
 		source = patchWabiSabiSource(source)
+
+		local patchOk, patchPart = verifyPatchedSource(source)
+		if not patchOk then
+			Log.warn("WabiSabi patch failed —", patchPart)
+			return nil
+		end
 
 		if not source:find("lurk: window chrome removed", 1, true) then
 			Log.warn("WabiSabi patch failed — title bar not removed")
@@ -2704,7 +2654,7 @@ do
 
 		local espTab = window:AddTab({ Title = "ESP" })
 		for _, panel in ipairs(FEATURE_PANELS) do
-			addCollapsibleFeature(espTab, panel)
+			addFeatureSection(espTab, panel)
 		end
 
 		local miscTab = window:AddTab({ Title = "Misc" })
@@ -2729,7 +2679,6 @@ do
 			GUI.library = nil
 			GUI.controls = {}
 			GUI.menuReady = false
-			LurkCollapse.clear()
 		end)
 
 		Runtime.onCleanup(function()
