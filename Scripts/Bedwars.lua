@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.5.0"
+local SCRIPT_VERSION = "1.5.1"
 
 --=============================================================================
 -- Environment
@@ -443,6 +443,7 @@ local Input = {}
 Input.VK = {
 	LBUTTON = 0x01, RBUTTON = 0x02, MBUTTON = 0x04,
 	BACKSPACE = 0x08, TAB = 0x09, ENTER = 0x0D, SHIFT = 0x10,
+	LSHIFT = 0xA0, RSHIFT = 0xA1,
 	CTRL = 0x11, ALT = 0x12, CAPSLOCK = 0x14, ESCAPE = 0x1B,
 	SPACE = 0x20, PAGEUP = 0x21, PAGEDOWN = 0x22, END = 0x23, HOME = 0x24,
 	LEFT = 0x25, UP = 0x26, RIGHT = 0x27, DOWN = 0x28,
@@ -625,7 +626,7 @@ Config.defaults = {
 	unloadKey = Input.VK.END,
 	gui = {
 		enabled = true,
-		menuKey = "RightShift",
+		menuKey = Input.VK.RSHIFT,
 		theme = "Dark",
 		translucent = false,
 	},
@@ -2398,6 +2399,22 @@ do
 		return library
 	end
 
+	local function resolveMenuKey(value)
+		if type(value) == "number" then
+			return value
+		end
+		if type(value) == "string" then
+			local lowered = string.lower(value)
+			if lowered == "rightshift" or lowered == "rshift" then
+				return Input.VK.RSHIFT
+			end
+			if lowered == "leftshift" or lowered == "lshift" then
+				return Input.VK.LSHIFT
+			end
+		end
+		return Input.VK.RSHIFT
+	end
+
 	function GUI.init()
 		local settings = guiSettings()
 		if settings.enabled == false then
@@ -2423,7 +2440,7 @@ do
 			MinSize = Vector2.new(420, 340),
 			Theme = settings.theme or "Dark",
 			Translucent = settings.translucent == true,
-			MinimizeKey = settings.menuKey or "RightShift",
+			MinimizeKey = resolveMenuKey(settings.menuKey),
 			ConfigName = "lurk",
 		})
 
