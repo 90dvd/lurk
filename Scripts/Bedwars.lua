@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.4.4"
+local SCRIPT_VERSION = "1.4.5"
 
 --=============================================================================
 -- Environment
@@ -875,10 +875,9 @@ do
 		color = { 120, 200, 255 },
 	}
 
-	-- Every tracker queues its draw here so all labels project in one pass
-	-- with the same camera state — multiple RenderStepped hooks drift on jump.
+	-- Every tracker queues its draw here; one RenderStepped pass projects every
+	-- label with the same camera state — a second hook drifts on jump/camera shake.
 	local renderQueue = {}
-	local renderScheduled = false
 
 	-- Cosmetic previews and lobby props must never be drawn.
 	local EXCLUDED_PATHS = { "lockerpreview", "preview", "lobby", "viewmodel", "template" }
@@ -1469,22 +1468,26 @@ do
 			end
 		end
 
-		local function syncLive(entry)
-			if not entry.part then
-				return entry.center ~= nil
+		local function refreshEntryWorld(entry)
+			if entry.part then
+				local position = partExtents(entry.part)
+				if position then
+					if entry.extent then
+						entry.center = position
+						entry.minimum = position - entry.extent
+						entry.maximum = position + entry.extent
+					elseif entry.minimum and entry.maximum then
+						local half = (entry.maximum - entry.minimum) * 0.5
+						entry.center = position + (entry.anchorOffset or Vector3.zero)
+						entry.minimum = entry.center - half
+						entry.maximum = entry.center + half
+					else
+						entry.center = position
+					end
+					return true
+				end
 			end
-
-			local position = partExtents(entry.part)
-			if not position then
-				return false
-			end
-
-			entry.center = position
-			if entry.extent then
-				entry.minimum = position - entry.extent
-				entry.maximum = position + entry.extent
-			end
-			return true
+			return entry.center ~= nil
 		end
 
 		local function labelWorldPoint(entry)
@@ -1494,7 +1497,29 @@ do
 					return position
 				end
 			end
-			return Vector3.new(entry.center.X, entry.maximum.Y, entry.center.Z)
+			if entry.center then
+				return entry.center
+			end
+			if entry.maximum then
+				return entry.maximum
+			end
+			return nil
+		end
+
+		local function projectWorldLabel(entry)
+			local world = labelWorldPoint(entry)
+			if not world then
+				return nil
+			end
+
+			local screen, onScreen = WorldToScreen(world)
+			if not screen or typeof(screen) ~= "Vector2" then
+				return nil
+			end
+			if onScreen then
+				return screen.X, screen.Y
+			end
+			return nil
 		end
 
 		function tracker.scan()
@@ -1531,7 +1556,7 @@ do
 				if drawIt and settings.hideOwnTeam and entry.isOwn then
 					drawIt = false
 				end
-				if drawIt and (spec.live or spec.dynamic) and not syncLive(entry) then
+				if drawIt and not refreshEntryWorld(entry) then
 					drawIt = false
 				end
 
@@ -1550,16 +1575,16 @@ do
 					if settings.box then
 						minX, minY, maxX, maxY = projectBounds(entry.minimum, entry.maximum)
 						if minX then
-							labelX = (minX + maxX) * 0.5
-							labelY = minY - settings.fontSize - 2
+							labelX, labelY = projectWorldLabel(entry)
+							if not labelX then
+								labelX = (minX + maxX) * 0.5
+								labelY = minY
+							end
 						end
 					else
-						local screen, onScreen = WorldToScreen(labelWorldPoint(entry))
-						if onScreen then
-							minX, minY, maxX, maxY = screen.X, screen.Y, screen.X, screen.Y
-							-- Center=true anchors on the ore; a fixed pixel offset
-							-- slides relative to the point when the camera moves.
-							labelX, labelY = screen.X, screen.Y
+						labelX, labelY = projectWorldLabel(entry)
+						if labelX then
+							minX, minY, maxX, maxY = labelX, labelY, labelX, labelY
 						end
 					end
 
@@ -1715,14 +1740,6 @@ do
 			end, spec.settingsKey .. " scan")
 
 			renderQueue[#renderQueue + 1] = Runtime.guard(render, spec.settingsKey)
-			if not renderScheduled then
-				renderScheduled = true
-				Runtime.onRender(function()
-					for _, draw in pairs(renderQueue) do
-						draw()
-					end
-				end, "world esp")
-			end
 
 			Runtime.onCleanup(function()
 				hideFrom(1)
@@ -2235,6 +2252,12 @@ do
 		Features.probeAddress(address)
 		return Features.pinGuardianAddress(address)
 	end
+
+	function Features.flushRender()
+		for _, draw in pairs(renderQueue) do
+			draw()
+		end
+	end
 end
 
 --=============================================================================
@@ -2275,12 +2298,14 @@ local function main()
 		Runtime.unload()
 	end)
 
-	-- Input runs before the features so binds settle on the current frame.
+	-- Input and ESP share one RenderStepped hook so WorldToScreen uses the same
+	-- camera snapshot — separate hooks made labels slide on jump/camera shake.
 	Runtime.onRender(function()
 		Runtime.frame = Runtime.frame + 1
 		Input.update()
 		runBinds()
-	end, "input")
+		Features.flushRender()
+	end, "frame")
 
 	for _, feature in pairs(Features.list) do
 		if type(feature.init) == "function" then
