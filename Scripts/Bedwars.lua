@@ -846,38 +846,65 @@ do
 		return instance:FindFirstChildWhichIsA("BasePart")
 	end
 
+	-- IsA("BasePart") can be true for instances whose Position/Size Matcha does
+	-- not emulate, so both are validated before use instead of trusted.
+	local function partExtents(part)
+		local ok, position, size = pcall(function()
+			return part.Position, part.Size
+		end)
+
+		if not ok or typeof(position) ~= "Vector3" then
+			return nil
+		end
+		if typeof(size) ~= "Vector3" then
+			size = Vector3.zero
+		end
+
+		return position, size
+	end
+
 	-- Matcha's BasePart exposes Position and Size but no CFrame, so the box is
 	-- an axis-aligned bounding box over every part of the bed.
 	local function computeBounds(root, fallback)
 		local parts = {}
 
 		if root then
-			for _, descendant in pairs(root:GetDescendants()) do
-				if descendant:IsA("BasePart") then
-					parts[#parts + 1] = descendant
+			local ok, descendants = pcall(function()
+				return root:GetDescendants()
+			end)
+			if ok then
+				for _, descendant in pairs(descendants) do
+					if descendant:IsA("BasePart") then
+						parts[#parts + 1] = descendant
+					end
 				end
 			end
 		end
-		if #parts == 0 and fallback then
-			parts[1] = fallback
-		end
-		if #parts == 0 then
-			return nil
+		if fallback then
+			parts[#parts + 1] = fallback
 		end
 
 		local minX, minY, minZ = math.huge, math.huge, math.huge
 		local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+		local valid = 0
 
 		for _, part in pairs(parts) do
-			local position, size = part.Position, part.Size
-			local hx, hy, hz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
+			local position, size = partExtents(part)
+			if position then
+				valid = valid + 1
+				local hx, hy, hz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
 
-			minX = math.min(minX, position.X - hx)
-			minY = math.min(minY, position.Y - hy)
-			minZ = math.min(minZ, position.Z - hz)
-			maxX = math.max(maxX, position.X + hx)
-			maxY = math.max(maxY, position.Y + hy)
-			maxZ = math.max(maxZ, position.Z + hz)
+				minX = math.min(minX, position.X - hx)
+				minY = math.min(minY, position.Y - hy)
+				minZ = math.min(minZ, position.Z - hz)
+				maxX = math.max(maxX, position.X + hx)
+				maxY = math.max(maxY, position.Y + hy)
+				maxZ = math.max(maxZ, position.Z + hz)
+			end
+		end
+
+		if valid == 0 then
+			return nil
 		end
 
 		return Vector3.new(minX, minY, minZ), Vector3.new(maxX, maxY, maxZ)
@@ -925,6 +952,7 @@ do
 		end
 
 		local roots = {}
+		local stats = { candidates = 0, excluded = 0, unpositioned = 0 }
 
 		for _, descendant in pairs(descendants) do
 			local lowered = string.lower(descendant.Name)
@@ -933,9 +961,15 @@ do
 				and (descendant:IsA("Model") or descendant:IsA("BasePart"))
 
 			if isAnchor or isBed then
+				stats.candidates = stats.candidates + 1
+
 				local pathOk, path = pcall(function()
 					return descendant:GetFullName()
 				end)
+
+				if pathOk and isExcluded(path) then
+					stats.excluded = stats.excluded + 1
+				end
 
 				if pathOk and not isExcluded(path) then
 					local root = descendant:IsA("Model") and descendant or nearestModel(descendant)
@@ -957,17 +991,26 @@ do
 								isOwn = team ~= nil and myTeam ~= nil and string.lower(team) == string.lower(myTeam),
 								path = path,
 							}
+						else
+							stats.unpositioned = stats.unpositioned + 1
 						end
 					end
 				end
 			end
 		end
 
+		BedESP.stats = stats
 		return found
 	end
 
 	function BedESP.dump()
-		Log.info(string.format("%d bed(s) found", #BedESP.beds))
+		local stats = BedESP.stats or {}
+		Log.info(string.format("%d bed(s) drawn | candidates=%s excluded=%s without position=%s",
+			#BedESP.beds,
+			tostring(stats.candidates),
+			tostring(stats.excluded),
+			tostring(stats.unpositioned)))
+
 		for index, bed in pairs(BedESP.beds) do
 			Log.info(string.format("  %d. %s | team=%s | own=%s | %s",
 				index,
@@ -976,6 +1019,45 @@ do
 				tostring(bed.isOwn),
 				Util.vectorToString(bed.center, 0)))
 		end
+	end
+
+	-- Lists every Workspace instance whose name mentions a bed, so the real
+	-- hierarchy can be confirmed when the scan comes up empty.
+	function BedESP.probe(needle, limit)
+		needle = string.lower(needle or "bed")
+		limit = limit or 60
+
+		local ok, descendants = pcall(function()
+			return Workspace:GetDescendants()
+		end)
+		if not ok then
+			Log.error("probe: Workspace:GetDescendants() failed")
+			return
+		end
+
+		local matched = 0
+		for _, descendant in pairs(descendants) do
+			if string.find(string.lower(descendant.Name), needle, 1, true) then
+				matched = matched + 1
+				if matched <= limit then
+					local pathOk, path = pcall(function()
+						return descendant:GetFullName()
+					end)
+					local position = partExtents(descendant)
+
+					Log.info(string.format("  [%s]%s %s%s",
+						descendant.ClassName,
+						position and "" or " (no position)",
+						pathOk and path or descendant.Name,
+						(pathOk and isExcluded(path)) and "  <- excluded" or ""))
+				end
+			end
+		end
+
+		Log.info(string.format("%d instance(s) matched '%s'%s",
+			matched,
+			needle,
+			matched > limit and string.format(" (showing %d)", limit) or ""))
 	end
 
 	local pool = {}
@@ -1130,8 +1212,15 @@ do
 			Log.notify("Bed ESP " .. (settings.enabled and "on" or "off"), "luak", 1.5)
 		end)
 
+		local lastCount = -1
 		Runtime.every(settings.rescanInterval, function()
 			BedESP.beds = BedESP.scan()
+			if #BedESP.beds ~= lastCount then
+				lastCount = #BedESP.beds
+				local stats = BedESP.stats or {}
+				Log.info(string.format("beds: %d drawn, %s candidate(s)",
+					lastCount, tostring(stats.candidates)))
+			end
 		end, "bed scan")
 
 		Runtime.onRender(render, "bed esp")
