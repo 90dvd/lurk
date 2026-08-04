@@ -610,7 +610,14 @@ end
 local Config = {}
 
 Config.path = "lurk/config.json"
+
+-- mergeDefaults only fills in missing keys, so a saved config would keep an old
+-- value forever after a default changes. Bump this whenever that must not
+-- happen and the stored file gets discarded instead.
+Config.version = 2
+
 Config.defaults = {
+	version = Config.version,
 	enabled = true,
 	unloadKey = Input.VK.END,
 }
@@ -626,11 +633,14 @@ function Config.load()
 		return HttpService:JSONDecode(readfile(Config.path))
 	end)
 
-	if ok and type(decoded) == "table" then
-		Config.data = Util.mergeDefaults(decoded, Config.defaults)
-	else
+	if not ok or type(decoded) ~= "table" then
 		Log.warn("config unreadable, using defaults")
 		Config.data = Util.copy(Config.defaults)
+	elseif decoded.version ~= Config.version then
+		Log.info("config is from an older version, resetting to defaults")
+		Config.data = Util.copy(Config.defaults)
+	else
+		Config.data = Util.mergeDefaults(decoded, Config.defaults)
 	end
 
 	return Config.data
@@ -803,7 +813,7 @@ do
 	Config.defaults.bedEsp = {
 		enabled = true,
 		toggleKey = Input.VK.B,
-		box = true,
+		box = false,
 		label = true,
 		distance = true,
 		tracer = false,
@@ -980,8 +990,8 @@ do
 			myTeam = me.Team.Name
 		end
 
-		local roots = {}
-		local stats = { candidates = 0, excluded = 0, unpositioned = 0 }
+		local seen = {}
+		local stats = { candidates = 0, excluded = 0, unpositioned = 0, duplicates = 0 }
 
 		for _, descendant in pairs(descendants) do
 			local lowered = string.lower(descendant.Name)
@@ -1003,23 +1013,37 @@ do
 				if pathOk and not isExcluded(path) then
 					local root = descendant:IsA("Model") and descendant or nearestModel(descendant)
 					local part = anchorPart(descendant)
-					local key = root or part
 
-					if key and not roots[key] and (part or root) then
+					if part or root then
 						local minimum, maximum = computeBounds(root, part)
 						if minimum then
-							local team = resolveTeam(descendant)
-							roots[key] = true
-							found[#found + 1] = {
-								root = root,
-								part = part,
-								minimum = minimum,
-								maximum = maximum,
-								center = (minimum + maximum) * 0.5,
-								team = team,
-								isOwn = team ~= nil and myTeam ~= nil and string.lower(team) == string.lower(myTeam),
-								path = path,
-							}
+							local center = (minimum + maximum) * 0.5
+
+							-- One bed can carry several matching instances (an
+							-- anchor plus the model itself), and they do not
+							-- always resolve to the same root — so identity comes
+							-- from where the bed actually is, rounded to a stud.
+							local key = string.format("%d/%d/%d",
+								math.floor(center.X + 0.5),
+								math.floor(center.Y + 0.5),
+								math.floor(center.Z + 0.5))
+
+							if seen[key] then
+								stats.duplicates = stats.duplicates + 1
+							else
+								seen[key] = true
+								local team = resolveTeam(descendant)
+								found[#found + 1] = {
+									root = root,
+									part = part,
+									minimum = minimum,
+									maximum = maximum,
+									center = center,
+									team = team,
+									isOwn = team ~= nil and myTeam ~= nil and string.lower(team) == string.lower(myTeam),
+									path = path,
+								}
+							end
 						else
 							stats.unpositioned = stats.unpositioned + 1
 						end
@@ -1034,10 +1058,11 @@ do
 
 	function BedESP.dump()
 		local stats = BedESP.stats or {}
-		Log.info(string.format("%d bed(s) drawn | candidates=%s excluded=%s without position=%s",
+		Log.info(string.format("%d bed(s) drawn | candidates=%s excluded=%s duplicates=%s without position=%s",
 			#BedESP.beds,
 			tostring(stats.candidates),
 			tostring(stats.excluded),
+			tostring(stats.duplicates),
 			tostring(stats.unpositioned)))
 
 		for index, bed in pairs(BedESP.beds) do
