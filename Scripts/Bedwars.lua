@@ -18,7 +18,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.6.5"
+local SCRIPT_VERSION = "1.6.6"
 
 --=============================================================================
 -- Environment
@@ -2437,6 +2437,7 @@ do
 			{ "lurk: window chrome removed", "title bar removal" },
 			{ "lurk handles menu toggle", "menu key override" },
 			{ "State.ContentSlide.v = 0; State.ContentSlide.goal = 0", "tab animation disable" },
+			{ "lurk: matcha text outline", "text outline fix" },
 		}
 		for _, marker in ipairs(markers) do
 			if not source:find(marker[1], 1, true) then
@@ -2490,7 +2491,7 @@ do
 			"-- lurk handles menu toggle (Right Shift only)"
 		)
 
-		source = source:gsub("local TITLE_H = 42", "local TITLE_H = 0")
+		source = source:gsub("local TITLE_H = 42", "local TITLE_H = 8")
 
 		source = source:gsub(
 			'UI%.Title = cfg%.Title or "Wabi"',
@@ -2498,13 +2499,13 @@ do
 		)
 
 		source = source:gsub(
-			"local tabY0 = win%.y %+ TITLE_H %+ 10",
-			"local tabY0 = win.y + 14"
+			"elseif inBounds%(win%.x, win%.y, win%.w %- 120, TITLE_H%) then",
+			"elseif inBounds(win.x, win.y, win.w - 120, math.max(TITLE_H, 36)) then"
 		)
 
 		source = source:gsub(
-			"elseif inBounds%(win%.x, win%.y, win%.w %- 120, TITLE_H%) then",
-			"elseif inBounds(win.x, win.y, win.w - 120, math.max(TITLE_H, 36)) then"
+			"Outline = false })",
+			"Outline = true }) -- lurk: matcha text outline"
 		)
 
 		source = source:gsub(
@@ -2646,6 +2647,7 @@ do
 			Translucent = settings.translucent == true,
 			MinimizeKey = WABI_MENU_KEY_DISABLED,
 			ConfigName = "lurk",
+			AutoStep = false,
 		})
 
 		GUI.menuReady = true
@@ -2692,6 +2694,10 @@ do
 				end)
 			end
 		end)
+
+		if type(library.Start) == "function" then
+			library:Start()
+		end
 
 		Log.info("GUI ready (v" .. SCRIPT_VERSION .. ") — Right Shift toggles menu")
 		return true
