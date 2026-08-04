@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.4.9"
+local SCRIPT_VERSION = "1.5.0"
 
 --=============================================================================
 -- Environment
@@ -623,6 +623,12 @@ Config.defaults = {
 	version = Config.version,
 	enabled = true,
 	unloadKey = Input.VK.END,
+	gui = {
+		enabled = true,
+		menuKey = "RightShift",
+		theme = "Dark",
+		translucent = false,
+	},
 }
 Config.data = Util.copy(Config.defaults)
 
@@ -791,6 +797,12 @@ function Runtime.unload()
 	Log.notify("unloaded", "lurk", 2)
 	_G.LURK = nil
 end
+
+--=============================================================================
+-- GUI (WabiSabi — Matcha-native ImGui-style UI)
+--=============================================================================
+
+local GUI = {}
 
 --=============================================================================
 -- Features
@@ -1722,6 +1734,7 @@ do
 				Input.bind(settings.toggleKey, function()
 					settings.enabled = not settings.enabled
 					Log.notify(spec.title .. " " .. (settings.enabled and "on" or "off"), "lurk", 1.5)
+					GUI.syncSetting(spec.settingsKey .. ".enabled", settings.enabled)
 				end)
 			end
 
@@ -2271,6 +2284,201 @@ do
 	end
 end
 
+do
+	local WABI_SABI_URL = "https://scripts.wabisabi.mom/wabi-sabi-ui-lib.lua"
+
+	GUI.library = nil
+	GUI.controls = {}
+
+	local ESP_PANELS = {
+		{
+			settingsKey = "bedEsp",
+			title = "Bed ESP",
+			toggles = {
+				{ key = "enabled", title = "Enabled" },
+				{ key = "label", title = "Label" },
+				{ key = "distance", title = "Distance" },
+				{ key = "box", title = "Box" },
+				{ key = "tracer", title = "Tracer" },
+				{ key = "hideOwnTeam", title = "Hide own team" },
+			},
+		},
+		{
+			settingsKey = "emeraldEsp",
+			title = "Emerald ESP",
+			toggles = {
+				{ key = "enabled", title = "Enabled" },
+				{ key = "label", title = "Label" },
+				{ key = "distance", title = "Distance" },
+				{ key = "box", title = "Box" },
+				{ key = "tracer", title = "Tracer" },
+			},
+		},
+		{
+			settingsKey = "diamondEsp",
+			title = "Diamond ESP",
+			toggles = {
+				{ key = "enabled", title = "Enabled" },
+				{ key = "label", title = "Label" },
+				{ key = "distance", title = "Distance" },
+				{ key = "box", title = "Box" },
+				{ key = "tracer", title = "Tracer" },
+			},
+		},
+		{
+			settingsKey = "diamondGuardianEsp",
+			title = "Diamond Guardian ESP",
+			toggles = {
+				{ key = "enabled", title = "Enabled" },
+				{ key = "label", title = "Label" },
+				{ key = "distance", title = "Distance" },
+				{ key = "showHealth", title = "Show health" },
+				{ key = "box", title = "Box" },
+				{ key = "tracer", title = "Tracer" },
+			},
+		},
+	}
+
+	local function guiSettings()
+		local settings = Config.data.gui
+		if type(settings) ~= "table" then
+			settings = Util.copy(Config.defaults.gui)
+			Config.data.gui = settings
+		end
+		return settings
+	end
+
+	function GUI.syncSetting(path, value)
+		local control = GUI.controls[path]
+		if control and type(control.SetValue) == "function" then
+			pcall(function()
+				control:SetValue(value)
+			end)
+		end
+	end
+
+	local function addSettingToggle(section, settings, toggleSpec)
+		local key = toggleSpec.key
+		local path = toggleSpec.path or key
+		local control = section:AddToggle({
+			Title = toggleSpec.title,
+			Default = settings[key] == true,
+			Callback = function(enabled)
+				settings[key] = enabled
+				Config.save()
+			end,
+		})
+		GUI.controls[toggleSpec.settingsKey .. "." .. path] = control
+	end
+
+	local function loadLibrary()
+		if GUI.library and GUI.library.Loaded then
+			return GUI.library
+		end
+
+		local source = game:HttpGet(WABI_SABI_URL)
+		if type(source) ~= "string" or #source == 0 then
+			return nil
+		end
+
+		local chunk = loadstring(source)
+		if type(chunk) ~= "function" then
+			return nil
+		end
+
+		local ok, library = pcall(chunk)
+		if not ok or type(library) ~= "table" then
+			library = WabiSabi
+		end
+		if type(library) ~= "table" then
+			return nil
+		end
+
+		GUI.library = library
+		return library
+	end
+
+	function GUI.init()
+		local settings = guiSettings()
+		if settings.enabled == false then
+			return false
+		end
+		if not Env.hasDrawing then
+			Log.warn("Drawing API unavailable — GUI disabled")
+			return false
+		end
+
+		local library = loadLibrary()
+		if not library then
+			Log.warn("WabiSabi failed to load — GUI disabled")
+			return false
+		end
+
+		GUI.controls = {}
+
+		local window = library:CreateWindow({
+			Title = "lurk",
+			SubTitle = "v" .. SCRIPT_VERSION,
+			Size = Vector2.new(520, 420),
+			MinSize = Vector2.new(420, 340),
+			Theme = settings.theme or "Dark",
+			Translucent = settings.translucent == true,
+			MinimizeKey = settings.menuKey or "RightShift",
+			ConfigName = "lurk",
+		})
+
+		local espTab = window:AddTab({ Title = "ESP" })
+		for _, panel in ipairs(ESP_PANELS) do
+			local featureSettings = Config.data[panel.settingsKey]
+			if featureSettings then
+				local section = espTab:AddSection(panel.title)
+				for _, toggleSpec in ipairs(panel.toggles) do
+					addSettingToggle(section, featureSettings, {
+						settingsKey = panel.settingsKey,
+						key = toggleSpec.key,
+						title = toggleSpec.title,
+					})
+				end
+			end
+		end
+
+		local miscTab = window:AddTab({ Title = "Misc" })
+		local scriptSection = miscTab:AddSection("Script")
+		scriptSection:AddButton({
+			Title = "Unload",
+			Description = "Stop lurk and remove all drawings",
+			Callback = function()
+				Runtime.unload()
+			end,
+		})
+		scriptSection:AddButton({
+			Title = "Save config",
+			Description = "Write lurk/config.json",
+			Callback = function()
+				if Config.save() then
+					library:Notify({ Title = "lurk", Content = "Config saved.", Duration = 2 })
+				end
+			end,
+		})
+
+		library:OnUnload(function()
+			GUI.library = nil
+			GUI.controls = {}
+		end)
+
+		Runtime.onCleanup(function()
+			if library and library.Loaded and not library.Unloaded then
+				pcall(function()
+					library:Destroy()
+				end)
+			end
+		end)
+
+		Log.info("GUI ready — press Right Shift to toggle menu")
+		return true
+	end
+end
+
 --=============================================================================
 -- Bootstrap
 --=============================================================================
@@ -2334,6 +2542,8 @@ local function main()
 		Log.info("trackers: " .. table.concat(names, ", "))
 	end
 
+	GUI.init()
+
 	_G.LURK = {
 		Env = Env,
 		Compat = Compat,
@@ -2347,6 +2557,7 @@ local function main()
 		Config = Config,
 		Runtime = Runtime,
 		Features = Features,
+		GUI = GUI,
 	}
 
 	Log.notify(string.format("loaded on %s %s", Env.name, Env.version), "lurk", 3)
