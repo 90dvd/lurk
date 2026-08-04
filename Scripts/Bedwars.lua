@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.6.2"
+local SCRIPT_VERSION = "1.6.3"
 
 --=============================================================================
 -- Environment
@@ -2615,9 +2615,16 @@ end]]
 			return nil
 		end
 
-		local ok, library = pcall(chunk)
-		if not ok or type(library) ~= "table" then
-			Log.error("WabiSabi patched load failed:", tostring(library))
+		local ok, err = pcall(chunk)
+		if not ok then
+			Log.error("WabiSabi patched load failed:", tostring(err))
+			return nil
+		end
+
+		-- Matcha drops a chunk's return value; WabiSabi sets the global instead.
+		local library = WabiSabi
+		if type(library) ~= "table" then
+			Log.error("WabiSabi global missing after load")
 			return nil
 		end
 

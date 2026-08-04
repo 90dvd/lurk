@@ -11,7 +11,7 @@
 local LOADER_VERSION = "2"
 local BASE = "https://raw.githubusercontent.com/90dvd/lurk/refs/heads/main/Scripts/Bedwars.lua"
 local CACHE = "lurk/Bedwars.lua"
-local MIN_VERSION = "1.6.2"
+local MIN_VERSION = "1.6.3"
 
 local function fetch(url)
 	local body
