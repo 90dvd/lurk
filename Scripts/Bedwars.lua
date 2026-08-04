@@ -1,16 +1,16 @@
 --[[
-	luak — base script for the Matcha LuaVM
+	lurk — base script for the Matcha LuaVM
 	https://doc.wabisabi.mom/matcha/
 
-	Loaded with (see loader.lua, OWNER/REPO is your GitHub repository):
-	loadstring(game:HttpGet("https://raw.githubusercontent.com/OWNER/REPO/refs/heads/main/Scripts/Bedwars.lua"))()
+	Loaded with (see loader.lua):
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/refs/heads/main/Scripts/Bedwars.lua"))()
 
 	Single file on purpose: Matcha's `require` resolves against its own module
 	root, which is separate from the writefile workspace, so a written module
 	can never be required back in.
 
 	The chunk must not rely on a top-level `return` value — Matcha drops those.
-	The public handle is the `_G.LUAK` global set at the bottom.
+	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
 --=============================================================================
@@ -116,7 +116,7 @@ end
 --=============================================================================
 
 local Log = {}
-Log.prefix = "[luak]"
+Log.prefix = "[lurk]"
 Log.enabled = true
 
 function Log.info(...)
@@ -137,7 +137,7 @@ end
 
 function Log.notify(message, title, duration)
 	if type(notify) == "function" then
-		notify(tostring(message), title or "luak", duration or 3)
+		notify(tostring(message), title or "lurk", duration or 3)
 	end
 	Log.info(message)
 end
@@ -609,7 +609,7 @@ end
 
 local Config = {}
 
-Config.path = "luak/config.json"
+Config.path = "lurk/config.json"
 Config.defaults = {
 	enabled = true,
 	unloadKey = Input.VK.END,
@@ -772,8 +772,8 @@ function Runtime.unload()
 	Draw.clear()
 	Config.save()
 
-	Log.notify("unloaded", "luak", 2)
-	_G.LUAK = nil
+	Log.notify("unloaded", "lurk", 2)
+	_G.LURK = nil
 end
 
 --=============================================================================
@@ -1270,7 +1270,7 @@ do
 
 		Input.bind(settings.toggleKey, function()
 			settings.enabled = not settings.enabled
-			Log.notify("Bed ESP " .. (settings.enabled and "on" or "off"), "luak", 1.5)
+			Log.notify("Bed ESP " .. (settings.enabled and "on" or "off"), "lurk", 1.5)
 		end)
 
 		local lastCount = -1
@@ -1307,8 +1307,8 @@ local function waitForPlayer(timeout)
 end
 
 local function main()
-	if type(_G.LUAK) == "table" and _G.LUAK.Runtime then
-		pcall(_G.LUAK.Runtime.unload)
+	if type(_G.LURK) == "table" and _G.LURK.Runtime then
+		pcall(_G.LURK.Runtime.unload)
 	end
 
 	if not Env.isMatcha then
@@ -1343,7 +1343,7 @@ local function main()
 		end
 	end
 
-	_G.LUAK = {
+	_G.LURK = {
 		Env = Env,
 		Compat = Compat,
 		Log = Log,
@@ -1358,7 +1358,7 @@ local function main()
 		Features = Features,
 	}
 
-	Log.notify(string.format("loaded on %s %s", Env.name, Env.version), "luak", 3)
+	Log.notify(string.format("loaded on %s %s", Env.name, Env.version), "lurk", 3)
 end
 
 main()

@@ -1,10 +1,9 @@
 --[[
-	luak loader
+	lurk loader
 
-	Replace OWNER and REPO below with your GitHub user and repository name, then
-	paste the one-liner into Matcha:
+	Paste this one-liner into Matcha:
 
-	loadstring(game:HttpGet("https://raw.githubusercontent.com/OWNER/REPO/refs/heads/main/Scripts/Bedwars.lua"))()
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/refs/heads/main/Scripts/Bedwars.lua"))()
 
 	The version below does the same but survives a failed download. HttpGet never
 	raises — it returns "" — and loadstring hands back a callable function even
@@ -13,8 +12,8 @@
 	does nothing.
 ]]
 
-local URL = "https://raw.githubusercontent.com/OWNER/REPO/refs/heads/main/Scripts/Bedwars.lua"
-local CACHE = "luak/Bedwars.lua"
+local URL = "https://raw.githubusercontent.com/90dvd/lurk/refs/heads/main/Scripts/Bedwars.lua"
+local CACHE = "lurk/Bedwars.lua"
 
 local source
 
@@ -30,7 +29,7 @@ if downloaded and source then
 		writefile(CACHE, source)
 	end)
 else
-	warn("[luak] download failed, falling back to cache")
+	warn("[lurk] download failed, falling back to cache")
 	pcall(function()
 		if isfile(CACHE) then
 			source = readfile(CACHE)
@@ -39,7 +38,7 @@ else
 end
 
 if source and #source > 0 then
-	loadstring(source, "luak")()
+	loadstring(source, "lurk")()
 else
-	warn("[luak] no source available — check the URL and your connection")
+	warn("[lurk] no source available — check the URL and your connection")
 end
