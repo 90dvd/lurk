@@ -8,7 +8,7 @@
 
 	If you still get an old version, use the commit URL instead:
 
-	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/2c8c911/Scripts/Bedwars.lua?t=" .. tick()))()
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/d61777c/Scripts/Bedwars.lua?t=" .. tick()))()
 
 	Single file on purpose: Matcha's `require` resolves against its own module
 	root, which is separate from the writefile workspace, so a written module
