@@ -670,14 +670,43 @@ Runtime.cleanups = {}
 Runtime.frame = 0
 Runtime.startedAt = 0
 
+-- A handler that errors does so every frame, so identical messages are
+-- collapsed and reported at most once every few seconds with a repeat count.
+local ERROR_COOLDOWN = 5
+local reported = {}
+
+local function reportError(key, message)
+	local now = tick()
+	local record = reported[key]
+
+	if record and record.message == message then
+		if now - record.at < ERROR_COOLDOWN then
+			record.suppressed = record.suppressed + 1
+			return
+		end
+
+		if record.suppressed > 0 then
+			Log.error(key .. ":", message, string.format("(repeated %dx)", record.suppressed))
+		else
+			Log.error(key .. ":", message)
+		end
+		reported[key] = { message = message, at = now, suppressed = 0 }
+		return
+	end
+
+	Log.error(key .. ":", message)
+	reported[key] = { message = message, at = now, suppressed = 0 }
+end
+
 local function guard(callback, label)
+	local key = label or "handler"
 	return function(...)
 		if not Runtime.running then
 			return
 		end
 		local ok, err = pcall(callback, ...)
 		if not ok then
-			Log.error((label or "handler") .. ":", err)
+			reportError(key, tostring(err))
 		end
 	end
 end
@@ -716,7 +745,7 @@ function Runtime.every(interval, callback, label)
 		while Runtime.running do
 			local ok, err = pcall(callback)
 			if not ok then
-				Log.error((label or "loop") .. ":", err)
+				reportError(label or "loop", tostring(err))
 			end
 			wait(interval)
 		end
@@ -1062,6 +1091,35 @@ do
 
 	local pool = {}
 
+	-- The docs call the text size FontSize, but the VM rejects that name on at
+	-- least some builds, so the actual property is probed once and remembered.
+	-- `false` means neither name works and the size is left at its default.
+	local sizeProperty
+
+	local function applyFontSize(text, value)
+		if sizeProperty == false then
+			return
+		end
+
+		if sizeProperty then
+			text[sizeProperty] = value
+			return
+		end
+
+		for _, candidate in pairs({ "FontSize", "Size", "TextSize" }) do
+			local ok = pcall(function()
+				text[candidate] = value
+			end)
+			if ok then
+				sizeProperty = candidate
+				return
+			end
+		end
+
+		sizeProperty = false
+		Log.warn("no usable text size property on this Matcha build")
+	end
+
 	local function acquire(index)
 		local slot = pool[index]
 		if slot then
@@ -1182,7 +1240,10 @@ do
 
 						slot.text.Text = caption
 						slot.text.Color = color
-						slot.text.FontSize = settings.fontSize
+						if slot.fontSize ~= settings.fontSize then
+							applyFontSize(slot.text, settings.fontSize)
+							slot.fontSize = settings.fontSize
+						end
 						slot.text.Position = Vector2.new((minX + maxX) * 0.5, minY - settings.fontSize - 2)
 						slot.text.Visible = true
 					else

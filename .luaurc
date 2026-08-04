@@ -6,6 +6,9 @@
 		"UnknownGlobal": true
 	},
 	"globals": [
+		"task",
+		"warn",
+		"typeof",
 		"loadstring",
 		"decompile",
 		"WorldToScreen",
