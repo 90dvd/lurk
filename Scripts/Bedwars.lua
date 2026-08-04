@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.4.2"
+local SCRIPT_VERSION = "1.4.3"
 
 --=============================================================================
 -- Environment
@@ -1206,6 +1206,19 @@ do
 							center = position
 							span = (maximum - minimum).Magnitude
 						end
+					elseif spec.entityPart then
+						root = descendant:IsA("Model") and descendant or nearestModel(descendant)
+						part = spec.getPart and spec.getPart(descendant) or anchorPart(descendant)
+						if part then
+							local position = partExtents(part)
+							if position then
+								local half = Vector3.new(0.5, 0.5, 0.5)
+								minimum = position - half
+								maximum = position + half
+								center = position
+								span = 1
+							end
+						end
 					else
 						root = descendant:IsA("Model") and descendant or nearestModel(descendant)
 						if spec.getPart then
@@ -1725,6 +1738,42 @@ do
 		return false
 	end
 
+	local function entityHumanoid(model)
+		if not model then
+			return nil
+		end
+		return model:FindFirstChild("Humanoid") or model:FindFirstChildOfClass("Humanoid")
+	end
+
+	local function entityRootPart(model)
+		if not model then
+			return nil
+		end
+		return model:FindFirstChild("HumanoidRootPart")
+			or model:FindFirstChild("Root")
+			or model:FindFirstChild("RootPart")
+			or model.PrimaryPart
+			or model:FindFirstChildWhichIsA("BasePart")
+	end
+
+	local KNOWN_KIT_ENTITY_NAMES = {
+		bee = true,
+		treeorb = true,
+		critstar = true,
+		vitalitystar = true,
+	}
+
+	local function isKnownKitEntity(instance)
+		local lowered = string.lower(instance.Name)
+		if KNOWN_KIT_ENTITY_NAMES[lowered] then
+			return true
+		end
+		if instance:FindFirstChild("hidden-metal-prompt") then
+			return true
+		end
+		return false
+	end
+
 	local function isHostileEntityModel(instance)
 		if not instance:IsA("Model") then
 			return false
@@ -1732,30 +1781,55 @@ do
 		if isPlayerCharacter(instance) then
 			return false
 		end
-		if not instance:FindFirstChild("HumanoidRootPart") then
+		if not entityRootPart(instance) then
 			return false
 		end
-		if not instance:FindFirstChildOfClass("Humanoid") then
+		if not entityHumanoid(instance) then
 			return false
 		end
 		return true
+	end
+
+	local function guardianDisplayName(instance)
+		local name = instance and instance.Name or "DIAMOND GUARDIAN"
+		if string.lower(name) == "entity model" or name == "" then
+			return "DIAMOND GUARDIAN"
+		end
+		return string.upper(name)
 	end
 
 	local function isDiamondGuardian(instance, path)
 		if not isHostileEntityModel(instance) then
 			return false
 		end
+		if isKnownKitEntity(instance) then
+			return false
+		end
 
 		local lowered = string.lower(instance.Name)
 		local pathLower = path and string.lower(path) or ""
 
-		-- BedWars technical folder is "guardians" (wiki). In-game the model is
-		-- often just "Entity Model", so the path matters more than the name.
-		if string.find(pathLower, "guardians", 1, true) then
-			if string.find(pathLower, "emerald", 1, true) or string.find(lowered, "emerald", 1, true) then
-				return false
-			end
+		local humanoid = entityHumanoid(instance)
+		if humanoid and humanoid.MaxHealth >= 400 then
 			return true
+		end
+
+		for _, key in pairs({ "EntityType", "entityType", "MobType", "mobType", "Type" }) do
+			local ok, value = pcall(function()
+				return instance:GetAttribute(key)
+			end)
+			if ok and type(value) == "string" then
+				local attrLower = string.lower(value)
+				if string.find(attrLower, "diamond", 1, true) and string.find(attrLower, "guardian", 1, true) then
+					return true
+				end
+			end
+		end
+
+		if string.find(pathLower, "guardian", 1, true) then
+			if not string.find(pathLower, "emerald", 1, true) and not string.find(lowered, "emerald", 1, true) then
+				return true
+			end
 		end
 
 		if lowered == "diamond_guardian" or lowered == "entity model" then
@@ -1823,6 +1897,15 @@ do
 			end
 		end
 
+		local allDescendants = workspaceDescendants()
+		if allDescendants then
+			for _, descendant in pairs(allDescendants) do
+				if descendant:IsA("Model") then
+					add(descendant)
+				end
+			end
+		end
+
 		return list
 	end
 
@@ -1832,10 +1915,11 @@ do
 			title = options.title,
 			caption = options.caption,
 			live = true,
+			entityPart = true,
 			mergeByAddress = true,
 			scanList = options.scanList or entityScanList,
 			getPart = function(instance)
-				return instance:FindFirstChild("HumanoidRootPart")
+				return entityRootPart(instance)
 			end,
 			accept = options.accept,
 			captionFn = options.captionFn,
@@ -1900,14 +1984,15 @@ do
 			return nil
 		end,
 		captionFn = function(entry, settings)
-			local humanoid = entry.instance:FindFirstChildOfClass("Humanoid")
+			local humanoid = entityHumanoid(entry.instance)
 			if humanoid and humanoid.Health <= 0 then
 				return nil
 			end
+			local caption = guardianDisplayName(entry.instance)
 			if settings.showHealth and humanoid then
-				return string.format("DIAMOND GUARDIAN  [%.0f HP]", humanoid.Health)
+				return string.format("%s  [%.0f HP]", caption, humanoid.Health)
 			end
-			return "DIAMOND GUARDIAN"
+			return caption
 		end,
 	}))
 
@@ -1921,19 +2006,51 @@ do
 		end
 	end
 
+	function Features.listEntities()
+		Log.info("non-player entity models:")
+		local matched = 0
+		for _, model in pairs(entityScanList()) do
+			if isHostileEntityModel(model) then
+				matched = matched + 1
+				local pathOk, path = pcall(function()
+					return model:GetFullName()
+				end)
+				local humanoid = entityHumanoid(model)
+				local addr = instanceAddress(model)
+				local addrText = addr and string.format("0x%X", addr) or "?"
+				local hpText = humanoid
+					and string.format("%.0f/%.0f HP", humanoid.Health, humanoid.MaxHealth)
+					or "no humanoid"
+				Log.info(string.format(
+					"  [%s] %s  %s  addr=%s  guardian=%s",
+					model.Name,
+					pathOk and path or "?",
+					hpText,
+					addrText,
+					tostring(isDiamondGuardian(model, pathOk and path or nil))
+				))
+			end
+		end
+		Log.info(string.format("%d hostile entity model(s)", matched))
+	end
+
 	function Features.probeEntities(needle)
 		needle = string.lower(needle or "guardian")
 		local matched = 0
 
 		for _, model in pairs(entityScanList()) do
-			if isHostileEntityModel(model) and string.find(string.lower(model.Name), needle, 1, true) then
-				matched = matched + 1
+			if isHostileEntityModel(model) then
 				local pathOk, path = pcall(function()
 					return model:GetFullName()
 				end)
-				local addr = instanceAddress(model)
-				local addrText = addr and string.format("0x%X", addr) or "?"
-				Log.info(string.format("  [%s] %s  addr=%s", model.Name, pathOk and path or "?", addrText))
+				local pathLower = pathOk and string.lower(path) or ""
+				local nameLower = string.lower(model.Name)
+				if string.find(nameLower, needle, 1, true) or string.find(pathLower, needle, 1, true) then
+					matched = matched + 1
+					local addr = instanceAddress(model)
+					local addrText = addr and string.format("0x%X", addr) or "?"
+					Log.info(string.format("  [%s] %s  addr=%s", model.Name, pathOk and path or "?", addrText))
+				end
 			end
 		end
 
@@ -1981,7 +2098,7 @@ do
 		end
 
 		if model and isHostileEntityModel(model) then
-			local humanoid = model:FindFirstChildOfClass("Humanoid")
+			local humanoid = entityHumanoid(model)
 			if humanoid then
 				Log.info(string.format("  humanoid: %.0f / %.0f HP", humanoid.Health, humanoid.MaxHealth))
 			end
