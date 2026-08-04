@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.4.6"
+local SCRIPT_VERSION = "1.4.7"
 
 --=============================================================================
 -- Environment
@@ -870,8 +870,9 @@ do
 		maxDistance = 0,
 		fontSize = 13,
 		rescanInterval = 2,
-		-- Session-specific Matcha Address; update each match if detection misses.
-		watchAddress = "0x1FD3DE98900",
+		-- Optional session Address; leave empty for fast load, then pin in-game:
+		-- LURK.Features.pinGuardianAddress("0x...")
+		watchAddress = "",
 		color = { 120, 200, 255 },
 	}
 
@@ -889,6 +890,8 @@ do
 	local snapshot = { at = 0, list = nil }
 	local gameSnapshot = { at = 0, list = nil }
 	local pinnedGuardianAddresses = {}
+	local pinnedGuardianModels = {}
+	local addressIndex = { at = 0, map = nil }
 
 	local function workspaceDescendants()
 		local now = tick()
@@ -973,82 +976,69 @@ do
 		return list
 	end
 
-	local function instanceMatchesAddress(instance, target)
-		if not instance or not target then
-			return false
-		end
-		if instanceAddress(instance) == target then
-			return true
-		end
-
-		local ok, descendants = pcall(function()
-			return instance:GetDescendants()
-		end)
-		if ok then
-			for _, descendant in pairs(descendants) do
-				if instanceAddress(descendant) == target then
-					return true
+	local function rebuildAddressIndex()
+		local map = {}
+		local descendants = gameDescendants()
+		if descendants then
+			for _, instance in pairs(descendants) do
+				local addr = instanceAddress(instance)
+				if addr then
+					map[addr] = instance
 				end
 			end
 		end
-
-		return false
+		addressIndex.at = tick()
+		addressIndex.map = map
+		return map
 	end
 
-	local function forEachInstance(callback)
-		local seen = {}
-
-		local function visit(instance)
-			if not instance or seen[instanceKey(instance)] then
-				return
-			end
-			seen[instanceKey(instance)] = true
-			callback(instance)
-		end
-
-		local descendants = gameDescendants()
-		if descendants then
-			for _, descendant in pairs(descendants) do
-				visit(descendant)
-			end
-			return
-		end
-
-		if not Workspace then
-			return
-		end
-
-		local ok, children = pcall(function()
-			return Workspace:GetChildren()
-		end)
-		if ok then
-			for _, child in pairs(children) do
-				visit(child)
-			end
-		end
-	end
-
-	local function findInstanceByAddress(address)
+	local function findInstanceByAddress(address, force)
 		local target = parseAddress(address)
 		if not target then
 			return nil
 		end
 
-		local descendants = gameDescendants()
-		if descendants then
-			for _, instance in pairs(descendants) do
-				if instanceAddress(instance) == target then
-					return instance
-				end
-			end
+		local now = tick()
+		if force or not addressIndex.map or now - addressIndex.at > 3 then
+			rebuildAddressIndex()
 		end
 
+		return addressIndex.map[target]
+	end
+
+	local function rememberPinnedGuardian(target, instance)
+		local model = modelFromInstance(instance) or instance
+		if model then
+			pinnedGuardianModels[target] = model
+		end
+		return model
+	end
+
+	local function cachedPinnedGuardian(target)
+		local model = pinnedGuardianModels[target]
+		if not model then
+			return nil
+		end
+
+		local ok, parent = pcall(function()
+			return model.Parent
+		end)
+		if ok and parent then
+			return model
+		end
+
+		pinnedGuardianModels[target] = nil
 		return nil
 	end
 
 	local function isPinnedGuardian(instance)
+		local key = instanceKey(instance)
 		for target, _ in pairs(pinnedGuardianAddresses) do
-			if instanceMatchesAddress(instance, target) then
+			local cached = pinnedGuardianModels[target]
+			if cached and instanceKey(cached) == key then
+				return true
+			end
+			if instanceAddress(instance) == target then
 				return true
 			end
 		end
@@ -1694,10 +1684,22 @@ do
 				end)
 			end
 
-			tracker.entries = tracker.scan()
-			local lastCount = #tracker.entries
-			Log.info(string.format("%s: %d drawn, %s candidate(s)",
-				spec.settingsKey, lastCount, tostring(tracker.stats.candidates)))
+			local lastCount = 0
+
+			local function runScan()
+				tracker.entries = tracker.scan()
+				lastCount = #tracker.entries
+				Log.info(string.format("%s: %d drawn, %s candidate(s)",
+					spec.settingsKey, lastCount, tostring(tracker.stats.candidates)))
+			end
+
+			tracker.entries = {}
+
+			if spec.deferScan then
+				Compat.spawn(runScan)
+			else
+				runScan()
+			end
 
 			Runtime.every(settings.rescanInterval, function()
 				tracker.entries = tracker.scan()
@@ -1944,19 +1946,10 @@ do
 			end
 		end
 
-		local allDescendants = workspaceDescendants()
-		if allDescendants then
-			for _, descendant in pairs(allDescendants) do
-				if descendant:IsA("Model") then
-					add(descendant)
-				end
-			end
-		end
-
 		for target, _ in pairs(pinnedGuardianAddresses) do
-			local pinned = findInstanceByAddress(target)
-			if pinned then
-				add(pinned)
+			local cached = cachedPinnedGuardian(target)
+			if cached then
+				add(cached)
 			end
 		end
 
@@ -1971,6 +1964,7 @@ do
 			live = true,
 			entityPart = true,
 			mergeByAddress = true,
+			deferScan = options.deferScan,
 			scanList = options.scanList or entityScanList,
 			getPart = function(instance)
 				return entityRootPart(instance)
@@ -2027,6 +2021,7 @@ do
 		settingsKey = "diamondGuardianEsp",
 		title = "Diamond Guardian ESP",
 		caption = "DIAMOND GUARDIAN",
+		deferScan = true,
 		accept = function(instance, lowered)
 			local path
 			local pathOk = pcall(function()
@@ -2179,7 +2174,12 @@ do
 
 		pinnedGuardianAddresses[target] = true
 
-		local instance = findInstanceByAddress(target)
+		local cached = cachedPinnedGuardian(target)
+		local instance = cached
+		if not instance then
+			instance = findInstanceByAddress(address, not silent)
+		end
+
 		if not instance then
 			if not silent then
 				Log.warn(string.format("guardian address 0x%X not found yet", target))
@@ -2187,7 +2187,7 @@ do
 			return false
 		end
 
-		local model = modelFromInstance(instance) or instance
+		local model = rememberPinnedGuardian(target, instance)
 		local pathOk, path = pcall(function()
 			return model:GetFullName()
 		end)
@@ -2288,7 +2288,9 @@ local function main()
 	do
 		local settings = Config.data.diamondGuardianEsp
 		if settings and type(settings.watchAddress) == "string" and settings.watchAddress ~= "" then
-			Features.pinGuardianAddress(settings.watchAddress)
+			Compat.spawn(function()
+				Features.pinGuardianAddress(settings.watchAddress)
+			end)
 			Runtime.every(settings.rescanInterval or 2, function()
 				Features.pinGuardianAddress(settings.watchAddress, true)
 			end, "guardian watch address")
