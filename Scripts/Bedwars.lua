@@ -614,7 +614,7 @@ Config.path = "lurk/config.json"
 -- mergeDefaults only fills in missing keys, so a saved config would keep an old
 -- value forever after a default changes. Bump this whenever that must not
 -- happen and the stored file gets discarded instead.
-Config.version = 3
+Config.version = 4
 
 Config.defaults = {
 	version = Config.version,
@@ -836,7 +836,7 @@ do
 		tracer = false,
 		maxDistance = 0,
 		fontSize = 13,
-		rescanInterval = 1,
+		rescanInterval = 3,
 		color = { 55, 230, 140 },
 	}
 
@@ -1001,6 +1001,18 @@ do
 		return nil
 	end
 
+	local function isRejected(lowered, reject)
+		if not reject then
+			return false
+		end
+		for _, needle in pairs(reject) do
+			if string.find(lowered, needle, 1, true) then
+				return true
+			end
+		end
+		return false
+	end
+
 	local function scan(spec)
 		local found = {}
 		local stats = { candidates = 0, excluded = 0, unpositioned = 0, duplicates = 0 }
@@ -1011,7 +1023,8 @@ do
 		end
 
 		for _, descendant in pairs(descendants) do
-			local match = spec.accept(descendant, string.lower(descendant.Name))
+			local lowered = string.lower(descendant.Name)
+			local match = not isRejected(lowered, spec.reject) and spec.accept(descendant, lowered)
 
 			if match then
 				stats.candidates = stats.candidates + 1
@@ -1031,13 +1044,20 @@ do
 					if part or root then
 						local minimum, maximum = computeBounds(root, part)
 						if minimum then
+							local center = (minimum + maximum) * 0.5
+							local anchor = part and partExtents(part)
+
 							found[#found + 1] = {
 								instance = descendant,
 								root = root,
 								part = part,
 								minimum = minimum,
 								maximum = maximum,
-								center = (minimum + maximum) * 0.5,
+								center = center,
+								-- Kept so a moving object can be re-placed from its
+								-- anchor alone, without walking its parts again.
+								extent = (maximum - minimum) * 0.5,
+								anchorOffset = anchor and (center - anchor) or Vector3.zero,
 								span = (maximum - minimum).Magnitude,
 								path = path,
 								match = match,
@@ -1191,16 +1211,24 @@ do
 			end
 		end
 
-		-- Dropped pickups move and vanish, so their bounds cannot be cached from
-		-- the scan. A gone instance yields no bounds and is simply skipped.
+		-- Objects that move need their box re-placed every frame. Recomputing it
+		-- from all parts would cost a descendant walk per object per frame, so the
+		-- box keeps its scanned size and only follows the anchor's position. An
+		-- instance that is gone reports no position and is skipped.
 		local function refresh(entry)
-			local minimum, maximum = computeBounds(entry.root, entry.part)
-			if not minimum then
+			if not entry.part then
+				return true
+			end
+
+			local position = partExtents(entry.part)
+			if not position then
 				return false
 			end
 
-			entry.minimum, entry.maximum = minimum, maximum
-			entry.center = (minimum + maximum) * 0.5
+			local center = position + entry.anchorOffset
+			entry.center = center
+			entry.minimum = center - entry.extent
+			entry.maximum = center + entry.extent
 			return true
 		end
 
@@ -1251,7 +1279,21 @@ do
 				end
 
 				if drawIt then
-					local minX, minY, maxX, maxY = projectBounds(entry.minimum, entry.maximum)
+					-- A box needs all eight corners projected; a label only needs
+					-- the point above the object, which is eight times less work
+					-- per frame and is the default.
+					local minX, minY, maxX, maxY
+
+					if settings.box then
+						minX, minY, maxX, maxY = projectBounds(entry.minimum, entry.maximum)
+					else
+						local top = Vector3.new(entry.center.X, entry.maximum.Y, entry.center.Z)
+						local screen, onScreen = WorldToScreen(top)
+						if onScreen then
+							minX, minY, maxX, maxY = screen.X, screen.Y, screen.X, screen.Y
+						end
+					end
+
 					if minX then
 						used = used + 1
 						local slot = acquire(used)
@@ -1418,16 +1460,16 @@ do
 		end,
 	}))
 
-	-- Emeralds appear both as static generators and as dropped pickups, so the
-	-- scan runs more often and positions are re-read every frame. The name is
-	-- matched as a substring because the exact naming differs per map.
+	-- Only the ore counts, not the emerald building blocks players place — those
+	-- are named after the block type, so anything mentioning a block is rejected.
+	-- The name itself is matched as a substring because the exact naming differs.
 	Features.register("EmeraldESP", createTracker({
 		settingsKey = "emeraldEsp",
 		title = "Emerald ESP",
 		caption = "EMERALD",
 		mergeRadius = 4,
-		dynamic = true,
 		showCount = true,
+		reject = { "block", "brick", "wool", "plank", "wall", "floor", "stair", "slab" },
 		accept = function(instance, lowered)
 			if string.find(lowered, "emerald", 1, true) then
 				return "name"
