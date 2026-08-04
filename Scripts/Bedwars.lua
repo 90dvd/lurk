@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.5.4"
+local SCRIPT_VERSION = "1.6.0"
 
 --=============================================================================
 -- Environment
@@ -2318,12 +2318,52 @@ do
 	GUI.controls = {}
 	GUI.menuReady = false
 
-	local ESP_PANELS = {
+	local LurkCollapse = { groups = {} }
+
+	function LurkCollapse.register(groupId, header, children)
+		LurkCollapse.groups[groupId] = {
+			expanded = false,
+			header = header,
+			children = children,
+		}
+		header._lurkCollapseGroup = groupId
+		for _, child in ipairs(children) do
+			child._lurkHidden = true
+		end
+		if type(header.SetDescription) == "function" then
+			header:SetDescription("Right-click for options")
+		end
+	end
+
+	function LurkCollapse.toggle(groupId)
+		local group = LurkCollapse.groups[groupId]
+		if not group then
+			return
+		end
+		group.expanded = not group.expanded
+		for _, child in ipairs(group.children) do
+			child._lurkHidden = not group.expanded
+		end
+		if group.header and type(group.header.SetDescription) == "function" then
+			if group.expanded then
+				group.header:SetDescription("Right-click to collapse")
+			else
+				group.header:SetDescription("Right-click for options")
+			end
+		end
+	end
+
+	function LurkCollapse.clear()
+		LurkCollapse.groups = {}
+	end
+
+	_G.LurkCollapse = LurkCollapse
+
+	local FEATURE_PANELS = {
 		{
 			settingsKey = "bedEsp",
 			title = "Bed ESP",
-			toggles = {
-				{ key = "enabled", title = "Enabled" },
+			options = {
 				{ key = "label", title = "Label" },
 				{ key = "distance", title = "Distance" },
 				{ key = "box", title = "Box" },
@@ -2334,8 +2374,7 @@ do
 		{
 			settingsKey = "emeraldEsp",
 			title = "Emerald ESP",
-			toggles = {
-				{ key = "enabled", title = "Enabled" },
+			options = {
 				{ key = "label", title = "Label" },
 				{ key = "distance", title = "Distance" },
 				{ key = "box", title = "Box" },
@@ -2345,8 +2384,7 @@ do
 		{
 			settingsKey = "diamondEsp",
 			title = "Diamond ESP",
-			toggles = {
-				{ key = "enabled", title = "Enabled" },
+			options = {
 				{ key = "label", title = "Label" },
 				{ key = "distance", title = "Distance" },
 				{ key = "box", title = "Box" },
@@ -2356,8 +2394,7 @@ do
 		{
 			settingsKey = "diamondGuardianEsp",
 			title = "Diamond Guardian ESP",
-			toggles = {
-				{ key = "enabled", title = "Enabled" },
+			options = {
 				{ key = "label", title = "Label" },
 				{ key = "distance", title = "Distance" },
 				{ key = "showHealth", title = "Show health" },
@@ -2385,28 +2422,155 @@ do
 		end
 	end
 
-	local function addSettingToggle(section, settings, toggleSpec)
-		local key = toggleSpec.key
-		local path = toggleSpec.path or key
-		local control = section:AddToggle({
-			Title = toggleSpec.title,
-			Default = settings[key] == true,
+	local function addCollapsibleFeature(tab, panel)
+		local featureSettings = Config.data[panel.settingsKey]
+		if not featureSettings then
+			return
+		end
+
+		local header = tab:AddToggle({
+			Title = panel.title,
+			Description = "Right-click for options",
+			Default = featureSettings.enabled == true,
 			Callback = function(enabled)
-				settings[key] = enabled
+				featureSettings.enabled = enabled
 				Config.save()
 			end,
 		})
-		GUI.controls[toggleSpec.settingsKey .. "." .. path] = control
+		GUI.controls[panel.settingsKey .. ".enabled"] = header
+
+		local children = {}
+		for _, option in ipairs(panel.options) do
+			local control = tab:AddToggle({
+				Title = option.title,
+				Default = featureSettings[option.key] == true,
+				Callback = function(enabled)
+					featureSettings[option.key] = enabled
+					Config.save()
+				end,
+			})
+			children[#children + 1] = control
+			GUI.controls[panel.settingsKey .. "." .. option.key] = control
+		end
+
+		LurkCollapse.register(panel.settingsKey, header, children)
 	end
 
 	local function patchWabiSabiSource(source)
 		if type(source) ~= "string" then
 			return source
 		end
-		return source:gsub(
+
+		source = source:gsub(
 			"if not busy and ck%(State%.MenuKey%) then UI:Minimize%(%) end",
 			"-- lurk handles menu toggle (Right Shift only)"
 		)
+
+		source = source:gsub(
+			'UI%.SubTitle = cfg%.SubTitle or ""',
+			'UI.SubTitle = cfg.SubTitle or ""\n    UI.HideTitleBar = cfg.HideTitleBar == true'
+		)
+
+		source = source:gsub("local TITLE_H = 42", "local TITLE_H = 0")
+
+		source = source:gsub(
+			"local Input = { mx = 0, my = 0, down = false, prevDown = false, clicked = false, keys = {} }",
+			"local Input = { mx = 0, my = 0, down = false, prevDown = false, clicked = false, rightDown = false, prevRightDown = false, rightClicked = false, keys = {} }"
+		)
+
+		source = source:gsub(
+			"Input.clicked = Input.down and not Input.prevDown\nend",
+			[[Input.clicked = Input.down and not Input.prevDown
+    Input.rightDown = type(ismouse2pressed) == "function" and ismouse2pressed() or false
+    Input.rightClicked = Input.rightDown and not Input.prevRightDown
+    Input.prevRightDown = Input.rightDown
+end]]
+		)
+
+		source = source:gsub(
+			"elseif inBounds%(win%.x, win%.y, win%.w %- 120, TITLE_H%) then",
+			"elseif inBounds(win.x, win.y, win.w - 120, math.max(TITLE_H, 36)) then"
+		)
+
+		source = source:gsub(
+			"for _, el in ipairs%(g%.elements%) do\n                if el%.kind == \"paragraph\"",
+			"for _, el in ipairs(g.elements) do\n                if not el._lurkHidden then\n                if el.kind == \"paragraph\""
+		)
+
+		source = source:gsub(
+			"totalH = totalH %+ cardHeight%(el%) %+ gap\n            end\n        end\n        totalH = totalH %- gap",
+			"totalH = totalH + cardHeight(el) + gap\n                end\n            end\n        end\n        totalH = totalH - gap"
+		)
+
+		source = source:gsub(
+			"for _, el in ipairs%(g%.elements%) do\n                idx = idx %+ 1\n                local hh = cardHeight%(el%)",
+			"for _, el in ipairs(g.elements) do\n                if not el._lurkHidden then\n                idx = idx + 1\n                local hh = cardHeight(el)"
+		)
+
+		source = source:gsub(
+			"cy = cy %+ hh %+ gap\n            end\n        end\n\n        rect%(\"win%.hdrmask\"",
+			"cy = cy + hh + gap\n                end\n            end\n        end\n\n        rect(\"win.hdrmask\""
+		)
+
+		source = source:gsub(
+			[[        if hovered and Input.clicked and not chipHit then
+            el.value = not el.value
+            el.anim.goal = el.value and 1 or 0
+            safe(el.callback, el.value)
+            safe(el.changed, el.value)
+        end
+        springStep%(el%.anim, dt)]],
+			[[        if hovered and Input.clicked and not chipHit then
+            el.value = not el.value
+            el.anim.goal = el.value and 1 or 0
+            safe(el.callback, el.value)
+            safe(el.changed, el.value)
+        end
+        if hovered and Input.rightClicked and el._lurkCollapseGroup and _G.LurkCollapse then
+            _G.LurkCollapse.toggle(el._lurkCollapseGroup)
+        end
+        springStep(el.anim, dt)]]
+		)
+
+		local titleBarBlock = [[    rect("win.tbmask", win.x, win.y, win.w, TITLE_H, Theme.WindowBg, OP.Window, 58, 8)
+    text("win.title", UI.Title or "Wabi", win.x + 18, win.y + 13, 18, Theme.Title, 62)
+    if UI.SubTitle and UI.SubTitle ~= "" then
+        text("win.sub", UI.SubTitle, win.x + 18 + textW(UI.Title or "Wabi", 18) + 10, win.y + 18, 13, Theme.SubText, 62)
+    end
+    local mbW, mbH = 28, 22
+    local mbX, mbY = win.x + win.w - 16 - mbW, win.y + 11
+    local mbHover = not block and inBounds(mbX, mbY, mbW, mbH)
+    rect("win.minbg", mbX, mbY, mbW, mbH, Theme.Control, mbHover and 0.6 or 0, 60, 5)
+    line("win.min", mbX + 9, mbY + math.floor(mbH / 2), mbX + mbW - 9, mbY + math.floor(mbH / 2), Theme.Text, 0.9, 61)
+    if mbHover and Input.clicked then UI:Minimize() end
+    local mxW = 28
+    local mxX, mxY = mbX - 6 - mxW, win.y + 11
+    local mxHover = not block and inBounds(mxX, mxY, mxW, mbH)
+    rect("win.maxbg", mxX, mxY, mxW, mbH, Theme.Control, mxHover and 0.6 or 0, 60, 5)
+    if State.Maximized then
+        outline("win.max", mxX + 8, mxY + 8, mxW - 20, mbH - 16, Theme.Text, 0.9, 61, 1)
+        outline("win.max2", mxX + 12, mxY + 4, mxW - 20, mbH - 16, Theme.Text, 0.9, 62, 1)
+    else
+        outline("win.max", mxX + 9, mxY + 6, mxW - 18, mbH - 12, Theme.Text, 0.9, 61, 2)
+    end
+    if mxHover and Input.clicked then UI:Maximize() end
+    local clW = 28
+    local clX, clY = mxX - 6 - clW, win.y + 11
+    local clHover = not block and inBounds(clX, clY, clW, mbH)
+    rect("win.clsbg", clX, clY, clW, mbH, Theme.Control, clHover and 0.6 or 0, 60, 5)
+    line("win.cls1", clX + 10, clY + 7, clX + clW - 10, clY + mbH - 7, Theme.Text, 0.9, 61)
+    line("win.cls2", clX + clW - 10, clY + 7, clX + 10, clY + mbH - 7, Theme.Text, 0.9, 61)
+    if clHover and Input.clicked then
+        State.Dialog = { title = "Unload interface", lines = { "Are you sure you want to unload the interface?" },
+            buttons = { { Title = "Yes", Callback = function() UI:Destroy() end }, { Title = "No" } }, onClosing = {}, onClosed = {} }
+    end
+    line("win.tline", win.x, win.y + TITLE_H, win.x + win.w, win.y + TITLE_H, Theme.TitleBarLine, 0.5, 59)]]
+
+		local titleBarHidden = [[    -- lurk: title bar removed]]
+
+		source = source:gsub(titleBarBlock, titleBarHidden, 1)
+
+		return source
 	end
 
 	local function loadLibrary()
@@ -2473,42 +2637,39 @@ do
 
 		local window = library:CreateWindow({
 			Title = "lurk",
-			SubTitle = "v" .. SCRIPT_VERSION,
-			Size = Vector2.new(520, 420),
-			MinSize = Vector2.new(420, 340),
+			SubTitle = "",
+			Size = Vector2.new(480, 400),
+			MinSize = Vector2.new(400, 320),
+			TabWidth = 118,
 			Theme = settings.theme or "Dark",
 			Translucent = settings.translucent == true,
+			HideTitleBar = true,
 			MinimizeKey = WABI_MENU_KEY_DISABLED,
 			ConfigName = "lurk",
 		})
 
 		GUI.menuReady = true
 
+		local combatTab = window:AddTab({ Title = "Combat" })
+		combatTab:AddParagraph({
+			Title = "Coming soon",
+			Content = "Combat modules will appear here.",
+		})
+
 		local espTab = window:AddTab({ Title = "ESP" })
-		for _, panel in ipairs(ESP_PANELS) do
-			local featureSettings = Config.data[panel.settingsKey]
-			if featureSettings then
-				local section = espTab:AddSection(panel.title)
-				for _, toggleSpec in ipairs(panel.toggles) do
-					addSettingToggle(section, featureSettings, {
-						settingsKey = panel.settingsKey,
-						key = toggleSpec.key,
-						title = toggleSpec.title,
-					})
-				end
-			end
+		for _, panel in ipairs(FEATURE_PANELS) do
+			addCollapsibleFeature(espTab, panel)
 		end
 
 		local miscTab = window:AddTab({ Title = "Misc" })
-		local scriptSection = miscTab:AddSection("Script")
-		scriptSection:AddButton({
+		miscTab:AddButton({
 			Title = "Unload",
 			Description = "Stop lurk and remove all drawings",
 			Callback = function()
 				Runtime.unload()
 			end,
 		})
-		scriptSection:AddButton({
+		miscTab:AddButton({
 			Title = "Save config",
 			Description = "Write lurk/config.json",
 			Callback = function()
@@ -2522,6 +2683,7 @@ do
 			GUI.library = nil
 			GUI.controls = {}
 			GUI.menuReady = false
+			LurkCollapse.clear()
 		end)
 
 		Runtime.onCleanup(function()
