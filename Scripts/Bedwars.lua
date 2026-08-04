@@ -13,6 +13,8 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
+local SCRIPT_VERSION = "1.4.0"
+
 --=============================================================================
 -- Environment
 --=============================================================================
@@ -1780,6 +1782,8 @@ local function main()
 	if type(_G.LURK) == "table" and _G.LURK.Runtime then
 		pcall(_G.LURK.Runtime.unload)
 	end
+
+	Log.info("script v" .. SCRIPT_VERSION .. " (" .. #Features.list .. " trackers)")
 
 	if not Env.isMatcha then
 		Log.warn("running on '" .. tostring(Env.name) .. "', not Matcha — behaviour may differ")
