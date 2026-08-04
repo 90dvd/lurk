@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.4.1"
+local SCRIPT_VERSION = "1.4.2"
 
 --=============================================================================
 -- Environment
@@ -905,6 +905,103 @@ do
 		return list
 	end
 
+	local function parseAddress(value)
+		if type(value) == "number" then
+			return value
+		end
+		if type(value) ~= "string" then
+			return nil
+		end
+		local hex = string.gsub(value, "^0[xX]", "")
+		return tonumber(hex, 16)
+	end
+
+	local function instanceAddress(instance)
+		local ok, addr = pcall(function()
+			return instance.Address
+		end)
+		if ok and type(addr) == "number" then
+			return addr
+		end
+		return nil
+	end
+
+	local function instanceKey(instance)
+		return instanceAddress(instance) or tostring(instance)
+	end
+
+	local function modelFromInstance(instance)
+		if not instance then
+			return nil
+		end
+		if instance:IsA("Model") then
+			return instance
+		end
+
+		local current = instance
+		for _ = 1, 6 do
+			local parent = current.Parent
+			if not parent then
+				break
+			end
+			if parent:IsA("Model") then
+				return parent
+			end
+			current = parent
+		end
+		return nil
+	end
+
+	local function forEachInstance(callback)
+		if not Workspace then
+			return
+		end
+
+		local seen = {}
+
+		local function visit(instance)
+			if not instance or seen[instanceKey(instance)] then
+				return
+			end
+			seen[instanceKey(instance)] = true
+			callback(instance)
+		end
+
+		local ok, children = pcall(function()
+			return Workspace:GetChildren()
+		end)
+		if ok then
+			for _, child in pairs(children) do
+				visit(child)
+			end
+		end
+
+		local descendants = workspaceDescendants()
+		if descendants then
+			for _, descendant in pairs(descendants) do
+				visit(descendant)
+			end
+		end
+	end
+
+	local function findInstanceByAddress(address)
+		local target = parseAddress(address)
+		if not target then
+			return nil
+		end
+
+		local found
+		forEachInstance(function(instance)
+			if found then
+				return
+			end
+			if instanceAddress(instance) == target then
+				found = instance
+			end
+		end)
+		return found
+	end
+
 	local function isExcluded(path)
 		local lowered = string.lower(path)
 		for _, needle in pairs(EXCLUDED_PATHS) do
@@ -1149,34 +1246,50 @@ do
 			end
 		end
 
-		-- One object carries several matching instances — a bed has two
-		-- BedPosition anchors plus sometimes the model itself — and they resolve
-		-- to different roots, so their boxes and centres differ by a few studs.
-		-- Hits this close together are therefore the same object.
-		local radius = spec.mergeRadius or 14
 		local merged = {}
 
-		for _, entry in pairs(found) do
-			local absorbed = false
-
-			for index, kept in pairs(merged) do
-				if Util.distance(entry.center, kept.center) <= radius then
-					absorbed = true
+		if spec.mergeByAddress then
+			local byKey = {}
+			for _, entry in pairs(found) do
+				local key = instanceKey(entry.instance)
+				if not byKey[key] then
+					byKey[key] = entry
+				else
 					stats.duplicates = stats.duplicates + 1
-					kept.count = kept.count + 1
-
-					-- Prefer the tighter box: a larger one usually means a parent
-					-- container got picked up instead of the object itself.
-					if entry.span < kept.span then
-						entry.count = kept.count
-						merged[index] = entry
-					end
-					break
 				end
 			end
-
-			if not absorbed then
+			for _, entry in pairs(byKey) do
 				merged[#merged + 1] = entry
+			end
+		else
+			-- One object carries several matching instances — a bed has two
+			-- BedPosition anchors plus sometimes the model itself — and they resolve
+			-- to different roots, so their boxes and centres differ by a few studs.
+			-- Hits this close together are therefore the same object.
+			local radius = spec.mergeRadius or 14
+
+			for _, entry in pairs(found) do
+				local absorbed = false
+
+				for index, kept in pairs(merged) do
+					if Util.distance(entry.center, kept.center) <= radius then
+						absorbed = true
+						stats.duplicates = stats.duplicates + 1
+						kept.count = kept.count + 1
+
+						-- Prefer the tighter box: a larger one usually means a parent
+						-- container got picked up instead of the object itself.
+						if entry.span < kept.span then
+							entry.count = kept.count
+							merged[index] = entry
+						end
+						break
+					end
+				end
+
+				if not absorbed then
+					merged[#merged + 1] = entry
+				end
 			end
 		end
 
@@ -1612,7 +1725,7 @@ do
 		return false
 	end
 
-	local function isDiamondGuardian(instance, path)
+	local function isHostileEntityModel(instance)
 		if not instance:IsA("Model") then
 			return false
 		end
@@ -1625,23 +1738,92 @@ do
 		if not instance:FindFirstChildOfClass("Humanoid") then
 			return false
 		end
+		return true
+	end
+
+	local function isDiamondGuardian(instance, path)
+		if not isHostileEntityModel(instance) then
+			return false
+		end
 
 		local lowered = string.lower(instance.Name)
-		if lowered == "diamond_guardian" then
+		local pathLower = path and string.lower(path) or ""
+
+		-- BedWars technical folder is "guardians" (wiki). In-game the model is
+		-- often just "Entity Model", so the path matters more than the name.
+		if string.find(pathLower, "guardians", 1, true) then
+			if string.find(pathLower, "emerald", 1, true) or string.find(lowered, "emerald", 1, true) then
+				return false
+			end
+			return true
+		end
+
+		if lowered == "diamond_guardian" or lowered == "entity model" then
 			return true
 		end
 		if string.find(lowered, "diamond", 1, true) and string.find(lowered, "guardian", 1, true) then
 			return true
 		end
-
-		if path then
-			local pathLower = string.lower(path)
-			if string.find(pathLower, "guardian", 1, true) and string.find(pathLower, "diamond", 1, true) then
-				return true
-			end
+		if string.find(pathLower, "diamond", 1, true) and string.find(pathLower, "guardian", 1, true) then
+			return true
 		end
 
 		return false
+	end
+
+	-- Rise scans Workspace:GetChildren() for entities, not the full descendant tree.
+	local function entityScanList()
+		local list = {}
+		local seen = {}
+
+		local function add(instance)
+			if not instance then
+				return
+			end
+
+			local model = instance:IsA("Model") and instance or modelFromInstance(instance)
+			if not model then
+				return
+			end
+
+			local key = instanceKey(model)
+			if seen[key] then
+				return
+			end
+			seen[key] = true
+			list[#list + 1] = model
+		end
+
+		if not Workspace then
+			return list
+		end
+
+		local ok, children = pcall(function()
+			return Workspace:GetChildren()
+		end)
+		if ok then
+			for _, child in pairs(children) do
+				add(child)
+			end
+		end
+
+		for _, folderName in pairs({ "guardians", "Guardians" }) do
+			local okFolder, folder = pcall(function()
+				return Workspace:FindFirstChild(folderName)
+			end)
+			if okFolder and folder then
+				local okDesc, descendants = pcall(function()
+					return folder:GetDescendants()
+				end)
+				if okDesc then
+					for _, descendant in pairs(descendants) do
+						add(descendant)
+					end
+				end
+			end
+		end
+
+		return list
 	end
 
 	local function createEntityTracker(options)
@@ -1650,7 +1832,8 @@ do
 			title = options.title,
 			caption = options.caption,
 			live = true,
-			mergeRadius = 8,
+			mergeByAddress = true,
+			scanList = options.scanList or entityScanList,
 			getPart = function(instance)
 				return instance:FindFirstChild("HumanoidRootPart")
 			end,
@@ -1740,27 +1923,78 @@ do
 
 	function Features.probeEntities(needle)
 		needle = string.lower(needle or "guardian")
-		local descendants = workspaceDescendants()
-		if not descendants then
-			return
-		end
-
 		local matched = 0
-		for _, model in pairs(descendants) do
-			if model:IsA("Model")
-				and model:FindFirstChild("HumanoidRootPart")
-				and model:FindFirstChildOfClass("Humanoid")
-				and not isPlayerCharacter(model)
-				and string.find(string.lower(model.Name), needle, 1, true) then
+
+		for _, model in pairs(entityScanList()) do
+			if isHostileEntityModel(model) and string.find(string.lower(model.Name), needle, 1, true) then
 				matched = matched + 1
 				local pathOk, path = pcall(function()
 					return model:GetFullName()
 				end)
-				Log.info(string.format("  [%s] %s", model.Name, pathOk and path or "?"))
+				local addr = instanceAddress(model)
+				local addrText = addr and string.format("0x%X", addr) or "?"
+				Log.info(string.format("  [%s] %s  addr=%s", model.Name, pathOk and path or "?", addrText))
 			end
 		end
 
 		Log.info(string.format("%d entity model(s) matched '%s'", matched, needle))
+	end
+
+	function Features.probeAddress(address)
+		local target = parseAddress(address)
+		if not target then
+			Log.warn("invalid address:", tostring(address))
+			return nil
+		end
+
+		local instance = findInstanceByAddress(target)
+		if not instance then
+			Log.warn(string.format("no instance at 0x%X", target))
+			return nil
+		end
+
+		local pathOk, path = pcall(function()
+			return instance:GetFullName()
+		end)
+		local classOk, className = pcall(function()
+			return instance.ClassName
+		end)
+		Log.info(string.format(
+			"0x%X -> [%s] %s",
+			target,
+			classOk and className or instance.Name,
+			pathOk and path or instance.Name
+		))
+
+		local model = modelFromInstance(instance)
+		if model and model ~= instance then
+			local modelPathOk, modelPath = pcall(function()
+				return model:GetFullName()
+			end)
+			local modelAddr = instanceAddress(model)
+			Log.info(string.format(
+				"  parent model: [%s] %s  addr=%s",
+				model.Name,
+				modelPathOk and modelPath or "?",
+				modelAddr and string.format("0x%X", modelAddr) or "?"
+			))
+		end
+
+		if model and isHostileEntityModel(model) then
+			local humanoid = model:FindFirstChildOfClass("Humanoid")
+			if humanoid then
+				Log.info(string.format("  humanoid: %.0f / %.0f HP", humanoid.Health, humanoid.MaxHealth))
+			end
+			local modelPathOk, modelPath = pcall(function()
+				return model:GetFullName()
+			end)
+			Log.info(string.format(
+				"  diamondGuardian=%s",
+				tostring(isDiamondGuardian(model, modelPathOk and modelPath or nil))
+			))
+		end
+
+		return instance
 	end
 end
 
