@@ -1,7 +1,7 @@
 --[[
 	lurk loader — paste this into Matcha:
 
-	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/refs/heads/main/loader.lua?t=" .. tick()))()
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/main/loader.lua?t=" .. tick()))()
 
 	Or load the script directly (recommended if the loader serves an old cache):
 
@@ -9,7 +9,7 @@
 ]]
 
 local LOADER_VERSION = "2"
-local BASE = "https://raw.githubusercontent.com/90dvd/lurk/refs/heads/main/Scripts/Bedwars.lua"
+local BASE = "https://raw.githubusercontent.com/90dvd/lurk/main/Scripts/Bedwars.lua"
 local CACHE = "lurk/Bedwars.lua"
 local MIN_VERSION = "1.6.3"
 

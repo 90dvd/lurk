@@ -4,7 +4,7 @@
 
 	Loaded with (append ?t=tick() so GitHub CDN does not serve a stale copy):
 
-	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/refs/heads/main/Scripts/Bedwars.lua?t=" .. tick()))()
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/main/Scripts/Bedwars.lua?t=" .. tick()))()
 
 	Single file on purpose: Matcha's `require` resolves against its own module
 	root, which is separate from the writefile workspace, so a written module
