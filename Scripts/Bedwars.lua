@@ -2,8 +2,9 @@
 	lurk — base script for the Matcha LuaVM
 	https://doc.wabisabi.mom/matcha/
 
-	Loaded with (see loader.lua):
-	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/refs/heads/main/Scripts/Bedwars.lua"))()
+	Loaded with (append ?t=tick() so GitHub CDN does not serve a stale copy):
+
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/refs/heads/main/Scripts/Bedwars.lua?t=" .. tick()))()
 
 	Single file on purpose: Matcha's `require` resolves against its own module
 	root, which is separate from the writefile workspace, so a written module
@@ -13,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.4.0"
+local SCRIPT_VERSION = "1.4.1"
 
 --=============================================================================
 -- Environment

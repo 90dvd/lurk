@@ -1,35 +1,36 @@
 --[[
-	lurk loader
+	lurk loader — paste this into Matcha:
 
-	Paste this one-liner into Matcha:
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/refs/heads/main/loader.lua?t=" .. tick()))()
 
-	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/refs/heads/main/Scripts/Bedwars.lua"))()
+	Or the direct script URL (same cache-bust trick):
 
-	The version below does the same but survives a failed download. HttpGet never
-	raises — it returns "" — and loadstring hands back a callable function even
-	for broken source, printing the syntax error only once that function is
-	called. An empty body therefore has to be caught here, or the loader silently
-	does nothing.
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/refs/heads/main/Scripts/Bedwars.lua?t=" .. tick()))()
 ]]
 
-local URL = "https://raw.githubusercontent.com/90dvd/lurk/refs/heads/main/Scripts/Bedwars.lua"
+local BASE = "https://raw.githubusercontent.com/90dvd/lurk/refs/heads/main/Scripts/Bedwars.lua"
 local CACHE = "lurk/Bedwars.lua"
 
-local source
-
-local downloaded = pcall(function()
-	local body = game:HttpGet(URL)
-	if type(body) == "string" and #body > 0 then
-		source = body
+local function fetch(url)
+	local body
+	local ok = pcall(function()
+		body = game:HttpGet(url)
+	end)
+	if ok and type(body) == "string" and #body > 0 then
+		return body
 	end
-end)
+	return nil
+end
 
-if downloaded and source then
+-- ?t= bypasses raw.githubusercontent.com CDN caching stale files.
+local source = fetch(BASE .. "?t=" .. tick())
+
+if source then
 	pcall(function()
 		writefile(CACHE, source)
 	end)
 else
-	warn("[lurk] download failed, falling back to cache")
+	warn("[lurk] download failed, trying cache")
 	pcall(function()
 		if isfile(CACHE) then
 			source = readfile(CACHE)
@@ -40,5 +41,5 @@ end
 if source and #source > 0 then
 	loadstring(source, "lurk")()
 else
-	warn("[lurk] no source available — check the URL and your connection")
+	warn("[lurk] no source — check https://github.com/90dvd/lurk")
 end
