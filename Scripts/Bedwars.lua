@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.6.0"
+local SCRIPT_VERSION = "1.6.1"
 
 --=============================================================================
 -- Environment
@@ -2456,22 +2456,56 @@ do
 		LurkCollapse.register(panel.settingsKey, header, children)
 	end
 
+	local function removeWindowChrome(source)
+		source = source:gsub("\r\n", "\n")
+		local marker = 'rect("win.tbmask"'
+		local startIndex = source:find(marker, 1, true)
+		if not startIndex then
+			return source
+		end
+
+		local lineStart = startIndex
+		for index = startIndex - 1, 1, -1 do
+			if source:sub(index, index) == "\n" then
+				lineStart = index + 1
+				break
+			end
+		end
+
+		local endMarker = 'line("win.tline"'
+		local endIndex = source:find(endMarker, startIndex, true)
+		if not endIndex then
+			return source
+		end
+
+		local lineEnd = source:find("\n", endIndex, true)
+		if not lineEnd then
+			return source
+		end
+
+		return source:sub(1, lineStart - 1)
+			.. "    -- lurk: window chrome removed\n"
+			.. source:sub(lineEnd + 1)
+	end
+
 	local function patchWabiSabiSource(source)
 		if type(source) ~= "string" then
 			return source
 		end
+
+		source = source:gsub("\r\n", "\n")
 
 		source = source:gsub(
 			"if not busy and ck%(State%.MenuKey%) then UI:Minimize%(%) end",
 			"-- lurk handles menu toggle (Right Shift only)"
 		)
 
-		source = source:gsub(
-			'UI%.SubTitle = cfg%.SubTitle or ""',
-			'UI.SubTitle = cfg.SubTitle or ""\n    UI.HideTitleBar = cfg.HideTitleBar == true'
-		)
-
 		source = source:gsub("local TITLE_H = 42", "local TITLE_H = 0")
+
+		source = source:gsub(
+			"local tabY0 = win%.y %+ TITLE_H %+ 10",
+			"local tabY0 = win.y + 14"
+		)
 
 		source = source:gsub(
 			"local Input = { mx = 0, my = 0, down = false, prevDown = false, clicked = false, keys = {} }",
@@ -2532,43 +2566,7 @@ end]]
         springStep(el.anim, dt)]]
 		)
 
-		local titleBarBlock = [[    rect("win.tbmask", win.x, win.y, win.w, TITLE_H, Theme.WindowBg, OP.Window, 58, 8)
-    text("win.title", UI.Title or "Wabi", win.x + 18, win.y + 13, 18, Theme.Title, 62)
-    if UI.SubTitle and UI.SubTitle ~= "" then
-        text("win.sub", UI.SubTitle, win.x + 18 + textW(UI.Title or "Wabi", 18) + 10, win.y + 18, 13, Theme.SubText, 62)
-    end
-    local mbW, mbH = 28, 22
-    local mbX, mbY = win.x + win.w - 16 - mbW, win.y + 11
-    local mbHover = not block and inBounds(mbX, mbY, mbW, mbH)
-    rect("win.minbg", mbX, mbY, mbW, mbH, Theme.Control, mbHover and 0.6 or 0, 60, 5)
-    line("win.min", mbX + 9, mbY + math.floor(mbH / 2), mbX + mbW - 9, mbY + math.floor(mbH / 2), Theme.Text, 0.9, 61)
-    if mbHover and Input.clicked then UI:Minimize() end
-    local mxW = 28
-    local mxX, mxY = mbX - 6 - mxW, win.y + 11
-    local mxHover = not block and inBounds(mxX, mxY, mxW, mbH)
-    rect("win.maxbg", mxX, mxY, mxW, mbH, Theme.Control, mxHover and 0.6 or 0, 60, 5)
-    if State.Maximized then
-        outline("win.max", mxX + 8, mxY + 8, mxW - 20, mbH - 16, Theme.Text, 0.9, 61, 1)
-        outline("win.max2", mxX + 12, mxY + 4, mxW - 20, mbH - 16, Theme.Text, 0.9, 62, 1)
-    else
-        outline("win.max", mxX + 9, mxY + 6, mxW - 18, mbH - 12, Theme.Text, 0.9, 61, 2)
-    end
-    if mxHover and Input.clicked then UI:Maximize() end
-    local clW = 28
-    local clX, clY = mxX - 6 - clW, win.y + 11
-    local clHover = not block and inBounds(clX, clY, clW, mbH)
-    rect("win.clsbg", clX, clY, clW, mbH, Theme.Control, clHover and 0.6 or 0, 60, 5)
-    line("win.cls1", clX + 10, clY + 7, clX + clW - 10, clY + mbH - 7, Theme.Text, 0.9, 61)
-    line("win.cls2", clX + clW - 10, clY + 7, clX + 10, clY + mbH - 7, Theme.Text, 0.9, 61)
-    if clHover and Input.clicked then
-        State.Dialog = { title = "Unload interface", lines = { "Are you sure you want to unload the interface?" },
-            buttons = { { Title = "Yes", Callback = function() UI:Destroy() end }, { Title = "No" } }, onClosing = {}, onClosed = {} }
-    end
-    line("win.tline", win.x, win.y + TITLE_H, win.x + win.w, win.y + TITLE_H, Theme.TitleBarLine, 0.5, 59)]]
-
-		local titleBarHidden = [[    -- lurk: title bar removed]]
-
-		source = source:gsub(titleBarBlock, titleBarHidden, 1)
+		source = removeWindowChrome(source)
 
 		return source
 	end
@@ -2636,14 +2634,13 @@ end]]
 		GUI.controls = {}
 
 		local window = library:CreateWindow({
-			Title = "lurk",
+			Title = "",
 			SubTitle = "",
 			Size = Vector2.new(480, 400),
 			MinSize = Vector2.new(400, 320),
 			TabWidth = 118,
 			Theme = settings.theme or "Dark",
 			Translucent = settings.translucent == true,
-			HideTitleBar = true,
 			MinimizeKey = WABI_MENU_KEY_DISABLED,
 			ConfigName = "lurk",
 		})
