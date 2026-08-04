@@ -1813,6 +1813,14 @@ local function main()
 		end
 	end
 
+	do
+		local names = {}
+		for _, feature in pairs(Features.list) do
+			names[#names + 1] = feature.name or "?"
+		end
+		Log.info("trackers: " .. table.concat(names, ", "))
+	end
+
 	_G.LURK = {
 		Env = Env,
 		Compat = Compat,
