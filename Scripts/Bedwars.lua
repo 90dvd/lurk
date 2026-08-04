@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.5.2"
+local SCRIPT_VERSION = "1.5.3"
 
 --=============================================================================
 -- Environment
@@ -496,22 +496,25 @@ function Input.released(keycode)
 	return currentState[keycode] ~= true and previousState[keycode] == true
 end
 
--- WabiSabi maps both shifts to VK 0x10; poll the side-specific codes instead.
-function Input.rightShiftPressed()
-	track(Input.VK.RSHIFT)
-	track(Input.VK.LSHIFT)
-	track(Input.VK.SHIFT)
+-- Shift menu: sample side-specific VKs on the generic shift edge so left sprint
+-- (often only VK 0x10) does not toggle the GUI when Matcha lacks VK 0xA0/0xA1.
+local shiftMenuPrev = false
 
-	if Input.pressed(Input.VK.LSHIFT) then
+function Input.consumeRightShiftMenuEdge()
+	local generic = iskeypressed(Input.VK.SHIFT) == true
+	local left = iskeypressed(Input.VK.LSHIFT) == true
+	local right = iskeypressed(Input.VK.RSHIFT) == true
+	local edge = generic and not shiftMenuPrev
+
+	shiftMenuPrev = generic
+
+	if not edge then
 		return false
 	end
-	if Input.pressed(Input.VK.RSHIFT) then
-		return true
+	if left then
+		return false
 	end
-	if Input.pressed(Input.VK.SHIFT) and Input.down(Input.VK.RSHIFT) and not Input.down(Input.VK.LSHIFT) then
-		return true
-	end
-	return false
+	return right
 end
 
 function Input.prepareKeys(keycodes)
@@ -2400,6 +2403,16 @@ do
 		GUI.controls[toggleSpec.settingsKey .. "." .. path] = control
 	end
 
+	local function patchWabiSabiSource(source)
+		if type(source) ~= "string" then
+			return source
+		end
+		return source:gsub(
+			"if not busy and ck%(State%.MenuKey%) then UI:Minimize%(%) end",
+			"-- lurk handles menu toggle (Right Shift only)"
+		)
+	end
+
 	local function loadLibrary()
 		if GUI.library and GUI.library.Loaded then
 			return GUI.library
@@ -2409,6 +2422,8 @@ do
 		if type(source) ~= "string" or #source == 0 then
 			return nil
 		end
+
+		source = patchWabiSabiSource(source)
 
 		local chunk = loadstring(source)
 		if type(chunk) ~= "function" then
@@ -2434,7 +2449,7 @@ do
 		if not isrbxactive() then
 			return
 		end
-		if not Input.rightShiftPressed() then
+		if not Input.consumeRightShiftMenuEdge() then
 			return
 		end
 		pcall(function()
@@ -2471,7 +2486,6 @@ do
 			ConfigName = "lurk",
 		})
 
-		Input.prepareKeys({ Input.VK.RSHIFT, Input.VK.LSHIFT, Input.VK.SHIFT })
 		GUI.menuReady = true
 
 		local espTab = window:AddTab({ Title = "ESP" })
