@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.5.1"
+local SCRIPT_VERSION = "1.5.2"
 
 --=============================================================================
 -- Environment
@@ -456,6 +456,7 @@ Input.VK = {
 	V = 0x56, W = 0x57, X = 0x58, Y = 0x59, Z = 0x5A,
 	F1 = 0x70, F2 = 0x71, F3 = 0x72, F4 = 0x73, F5 = 0x74, F6 = 0x75,
 	F7 = 0x76, F8 = 0x77, F9 = 0x78, F10 = 0x79, F11 = 0x7A, F12 = 0x7B,
+	F14 = 0x87,
 }
 
 local tracked = {}
@@ -493,6 +494,30 @@ end
 function Input.released(keycode)
 	track(keycode)
 	return currentState[keycode] ~= true and previousState[keycode] == true
+end
+
+-- WabiSabi maps both shifts to VK 0x10; poll the side-specific codes instead.
+function Input.rightShiftPressed()
+	track(Input.VK.RSHIFT)
+	track(Input.VK.LSHIFT)
+	track(Input.VK.SHIFT)
+
+	if Input.pressed(Input.VK.LSHIFT) then
+		return false
+	end
+	if Input.pressed(Input.VK.RSHIFT) then
+		return true
+	end
+	if Input.pressed(Input.VK.SHIFT) and Input.down(Input.VK.RSHIFT) and not Input.down(Input.VK.LSHIFT) then
+		return true
+	end
+	return false
+end
+
+function Input.prepareKeys(keycodes)
+	for _, keycode in ipairs(keycodes) do
+		track(keycode)
+	end
 end
 
 local binds = {}
@@ -2287,9 +2312,12 @@ end
 
 do
 	local WABI_SABI_URL = "https://scripts.wabisabi.mom/wabi-sabi-ui-lib.lua"
+	-- WabiSabi treats Shift as VK 0x10 (both sides). Use an unused key internally.
+	local WABI_MENU_KEY_DISABLED = Input.VK.F14
 
 	GUI.library = nil
 	GUI.controls = {}
+	GUI.menuReady = false
 
 	local ESP_PANELS = {
 		{
@@ -2399,20 +2427,19 @@ do
 		return library
 	end
 
-	local function resolveMenuKey(value)
-		if type(value) == "number" then
-			return value
+	function GUI.pollMenuToggle()
+		if not GUI.menuReady or not GUI.library or GUI.library.Unloaded then
+			return
 		end
-		if type(value) == "string" then
-			local lowered = string.lower(value)
-			if lowered == "rightshift" or lowered == "rshift" then
-				return Input.VK.RSHIFT
-			end
-			if lowered == "leftshift" or lowered == "lshift" then
-				return Input.VK.LSHIFT
-			end
+		if not isrbxactive() then
+			return
 		end
-		return Input.VK.RSHIFT
+		if not Input.rightShiftPressed() then
+			return
+		end
+		pcall(function()
+			GUI.library:Minimize()
+		end)
 	end
 
 	function GUI.init()
@@ -2440,9 +2467,12 @@ do
 			MinSize = Vector2.new(420, 340),
 			Theme = settings.theme or "Dark",
 			Translucent = settings.translucent == true,
-			MinimizeKey = resolveMenuKey(settings.menuKey),
+			MinimizeKey = WABI_MENU_KEY_DISABLED,
 			ConfigName = "lurk",
 		})
+
+		Input.prepareKeys({ Input.VK.RSHIFT, Input.VK.LSHIFT, Input.VK.SHIFT })
+		GUI.menuReady = true
 
 		local espTab = window:AddTab({ Title = "ESP" })
 		for _, panel in ipairs(ESP_PANELS) do
@@ -2481,6 +2511,7 @@ do
 		library:OnUnload(function()
 			GUI.library = nil
 			GUI.controls = {}
+			GUI.menuReady = false
 		end)
 
 		Runtime.onCleanup(function()
@@ -2540,6 +2571,7 @@ local function main()
 		Features.flushRender()
 		Input.update()
 		runBinds()
+		GUI.pollMenuToggle()
 	end, "frame")
 
 	for _, feature in pairs(Features.list) do
