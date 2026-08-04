@@ -614,7 +614,7 @@ Config.path = "lurk/config.json"
 -- mergeDefaults only fills in missing keys, so a saved config would keep an old
 -- value forever after a default changes. Bump this whenever that must not
 -- happen and the stored file gets discarded instead.
-Config.version = 4
+Config.version = 5
 
 Config.defaults = {
 	version = Config.version,
@@ -1001,6 +1001,20 @@ do
 		return nil
 	end
 
+	local function pathMatches(path, needles)
+		if not needles then
+			return false
+		end
+
+		local lowered = string.lower(path)
+		for _, needle in pairs(needles) do
+			if string.find(lowered, needle, 1, true) then
+				return true
+			end
+		end
+		return false
+	end
+
 	local function isRejected(lowered, reject)
 		if not reject then
 			return false
@@ -1009,6 +1023,26 @@ do
 			if string.find(lowered, needle, 1, true) then
 				return true
 			end
+		end
+		return false
+	end
+
+	local function isUnderContainer(instance)
+		local current = instance.Parent
+		for _ = 1, 8 do
+			if not current or current == Workspace or current == game then
+				break
+			end
+
+			local name = string.lower(current.Name)
+			if string.find(name, "chest", 1, true)
+				or string.find(name, "storage", 1, true)
+				or string.find(name, "inventory", 1, true)
+				or string.find(name, "backpack", 1, true) then
+				return true
+			end
+
+			current = current.Parent
 		end
 		return false
 	end
@@ -1033,11 +1067,11 @@ do
 					return descendant:GetFullName()
 				end)
 
-				if pathOk and isExcluded(path) then
+				if pathOk and (isExcluded(path) or pathMatches(path, spec.rejectPath)) then
 					stats.excluded = stats.excluded + 1
 				end
 
-				if pathOk and not isExcluded(path) then
+				if pathOk and not isExcluded(path) and not pathMatches(path, spec.rejectPath) then
 					local root = descendant:IsA("Model") and descendant or nearestModel(descendant)
 					local part = anchorPart(descendant)
 
@@ -1460,17 +1494,30 @@ do
 		end,
 	}))
 
-	-- Only the ore counts, not the emerald building blocks players place — those
-	-- are named after the block type, so anything mentioning a block is rejected.
-	-- The name itself is matched as a substring because the exact naming differs.
+	-- Only world ores count. Chests ship many emerald-named children for slots and
+	-- stored items — those must never be scanned or they show up as "EMERALD x14".
 	Features.register("EmeraldESP", createTracker({
 		settingsKey = "emeraldEsp",
 		title = "Emerald ESP",
 		caption = "EMERALD",
 		mergeRadius = 4,
-		showCount = true,
-		reject = { "block", "brick", "wool", "plank", "wall", "floor", "stair", "slab" },
+		rejectPath = {
+			"chest", "echest", "enderchest", "teamchest", "storage", "inventory",
+			"backpack", "shop", "locker", "hotbar", "toolbar", "replicatedstorage",
+			"startergui", "playergui", "players.",
+		},
+		reject = {
+			"block", "brick", "wool", "plank", "wall", "floor", "stair", "slab",
+			"slot", "icon", "label", "button", "frame", "billboard", "viewport",
+			"image", "text", "gui", "template", "preview",
+		},
 		accept = function(instance, lowered)
+			if isUnderContainer(instance) then
+				return nil
+			end
+			if not (instance:IsA("BasePart") or instance:IsA("Model")) then
+				return nil
+			end
 			if string.find(lowered, "emerald", 1, true) then
 				return "name"
 			end
