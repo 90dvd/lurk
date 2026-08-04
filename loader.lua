@@ -5,13 +5,13 @@
 
 	If GitHub CDN is stale, load by commit (always fresh):
 
-	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/d61777c/Scripts/Bedwars.lua?t=" .. tick()))()
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/9275ade/Scripts/Bedwars.lua?t=" .. tick()))()
 ]]
 
 local LOADER_VERSION = "5"
 local BASE = "https://raw.githubusercontent.com/90dvd/lurk/main/Scripts/Bedwars.lua"
 -- Bypasses raw.githubusercontent.com/main/ CDN lag (update on each release).
-local FALLBACK = "https://raw.githubusercontent.com/90dvd/lurk/d61777c/Scripts/Bedwars.lua"
+local FALLBACK = "https://raw.githubusercontent.com/90dvd/lurk/9275ade/Scripts/Bedwars.lua"
 local CACHE = "lurk/Bedwars.lua"
 local MIN_VERSION = "1.6.7"
 
