@@ -835,6 +835,9 @@ do
 
 	local TEAM_ATTRIBUTES = { "Team", "TeamName", "BedTeam", "team" }
 
+	-- Studs within which two hits are treated as the same bed.
+	local MERGE_RADIUS = 14
+
 	BedESP.beds = {}
 
 	local function isExcluded(path)
@@ -990,7 +993,6 @@ do
 			myTeam = me.Team.Name
 		end
 
-		local seen = {}
 		local stats = { candidates = 0, excluded = 0, unpositioned = 0, duplicates = 0 }
 
 		for _, descendant in pairs(descendants) do
@@ -1017,33 +1019,19 @@ do
 					if part or root then
 						local minimum, maximum = computeBounds(root, part)
 						if minimum then
-							local center = (minimum + maximum) * 0.5
-
-							-- One bed can carry several matching instances (an
-							-- anchor plus the model itself), and they do not
-							-- always resolve to the same root — so identity comes
-							-- from where the bed actually is, rounded to a stud.
-							local key = string.format("%d/%d/%d",
-								math.floor(center.X + 0.5),
-								math.floor(center.Y + 0.5),
-								math.floor(center.Z + 0.5))
-
-							if seen[key] then
-								stats.duplicates = stats.duplicates + 1
-							else
-								seen[key] = true
-								local team = resolveTeam(descendant)
-								found[#found + 1] = {
-									root = root,
-									part = part,
-									minimum = minimum,
-									maximum = maximum,
-									center = center,
-									team = team,
-									isOwn = team ~= nil and myTeam ~= nil and string.lower(team) == string.lower(myTeam),
-									path = path,
-								}
-							end
+							local team = resolveTeam(descendant)
+							found[#found + 1] = {
+								root = root,
+								part = part,
+								minimum = minimum,
+								maximum = maximum,
+								center = (minimum + maximum) * 0.5,
+								span = (maximum - minimum).Magnitude,
+								team = team,
+								isOwn = team ~= nil and myTeam ~= nil and string.lower(team) == string.lower(myTeam),
+								path = path,
+								fromAnchor = isAnchor,
+							}
 						else
 							stats.unpositioned = stats.unpositioned + 1
 						end
@@ -1052,8 +1040,37 @@ do
 			end
 		end
 
+		-- A single bed carries several matching instances (two BedPosition
+		-- anchors plus sometimes the model itself), and they resolve to different
+		-- roots, so their bounding boxes and centres differ by a few studs. Two
+		-- hits this close together are therefore the same bed. Two real beds are
+		-- never within this radius of each other.
+		local merged = {}
+
+		for _, bed in pairs(found) do
+			local absorbed = false
+
+			for index, kept in pairs(merged) do
+				if Util.distance(bed.center, kept.center) <= MERGE_RADIUS then
+					absorbed = true
+					stats.duplicates = stats.duplicates + 1
+
+					-- Prefer the tighter box: a larger one usually means a parent
+					-- container got picked up instead of the bed itself.
+					if bed.span < kept.span then
+						merged[index] = bed
+					end
+					break
+				end
+			end
+
+			if not absorbed then
+				merged[#merged + 1] = bed
+			end
+		end
+
 		BedESP.stats = stats
-		return found
+		return merged
 	end
 
 	function BedESP.dump()
@@ -1066,11 +1083,13 @@ do
 			tostring(stats.unpositioned)))
 
 		for index, bed in pairs(BedESP.beds) do
-			Log.info(string.format("  %d. %s | team=%s | own=%s | %s",
+			Log.info(string.format("  %d. %s | team=%s own=%s anchor=%s span=%.1f | %s",
 				index,
 				bed.path,
 				tostring(bed.team),
 				tostring(bed.isOwn),
+				tostring(bed.fromAnchor),
+				bed.span,
 				Util.vectorToString(bed.center, 0)))
 		end
 	end
