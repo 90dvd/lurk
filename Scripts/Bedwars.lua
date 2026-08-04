@@ -614,7 +614,7 @@ Config.path = "lurk/config.json"
 -- mergeDefaults only fills in missing keys, so a saved config would keep an old
 -- value forever after a default changes. Bump this whenever that must not
 -- happen and the stored file gets discarded instead.
-Config.version = 8
+Config.version = 9
 
 Config.defaults = {
 	version = Config.version,
@@ -856,6 +856,20 @@ do
 		color = { 0, 191, 255 },
 	}
 
+	Config.defaults.diamondGuardianEsp = {
+		enabled = true,
+		toggleKey = Input.VK.F4,
+		box = false,
+		label = true,
+		distance = true,
+		showHealth = true,
+		tracer = false,
+		maxDistance = 0,
+		fontSize = 13,
+		rescanInterval = 2,
+		color = { 120, 200, 255 },
+	}
+
 	-- Every tracker queues its draw here so all labels project in one pass
 	-- with the same camera state — multiple RenderStepped hooks drift on jump.
 	local renderQueue = {}
@@ -1094,7 +1108,11 @@ do
 						end
 					else
 						root = descendant:IsA("Model") and descendant or nearestModel(descendant)
-						part = anchorPart(descendant)
+						if spec.getPart then
+							part = spec.getPart(descendant)
+						else
+							part = anchorPart(descendant)
+						end
 						if part or root then
 							minimum, maximum = computeBounds(root, part)
 							if minimum then
@@ -1377,22 +1395,29 @@ do
 						end
 
 						if settings.label then
-							local caption = entry.caption or spec.caption
-							if spec.showCount and entry.count and entry.count > 1 then
-								caption = caption .. " x" .. entry.count
-							end
-							if settings.distance then
-								caption = caption .. string.format("  [%dm]", math.floor(distance + 0.5))
-							end
+							local caption = (spec.captionFn and spec.captionFn(entry, settings))
+								or entry.caption
+								or spec.caption
 
-							slot.text.Text = caption
-							slot.text.Color = color
-							if slot.fontSize ~= settings.fontSize then
-								applyFontSize(slot.text, settings.fontSize)
-								slot.fontSize = settings.fontSize
+							if caption then
+								if spec.showCount and entry.count and entry.count > 1 then
+									caption = caption .. " x" .. entry.count
+								end
+								if settings.distance then
+									caption = caption .. string.format("  [%dm]", math.floor(distance + 0.5))
+								end
+
+								slot.text.Text = caption
+								slot.text.Color = color
+								if slot.fontSize ~= settings.fontSize then
+									applyFontSize(slot.text, settings.fontSize)
+									slot.fontSize = settings.fontSize
+								end
+								slot.text.Position = Vector2.new(labelX, labelY)
+								slot.text.Visible = true
+							else
+								slot.text.Visible = false
 							end
-							slot.text.Position = Vector2.new(labelX, labelY)
-							slot.text.Visible = true
 						else
 							slot.text.Visible = false
 						end
@@ -1569,6 +1594,68 @@ do
 		})
 	end
 
+	local function isPlayerCharacter(model)
+		if not model or not model:IsA("Model") then
+			return false
+		end
+
+		local me = Me.player()
+		if me and (model == me.Character or model.Name == me.Name) then
+			return true
+		end
+		if Players then
+			return Players:FindFirstChild(model.Name) ~= nil
+		end
+		return false
+	end
+
+	local function isDiamondGuardian(instance, path)
+		if not instance:IsA("Model") then
+			return false
+		end
+		if isPlayerCharacter(instance) then
+			return false
+		end
+		if not instance:FindFirstChild("HumanoidRootPart") then
+			return false
+		end
+		if not instance:FindFirstChildOfClass("Humanoid") then
+			return false
+		end
+
+		local lowered = string.lower(instance.Name)
+		if lowered == "diamond_guardian" then
+			return true
+		end
+		if string.find(lowered, "diamond", 1, true) and string.find(lowered, "guardian", 1, true) then
+			return true
+		end
+
+		if path then
+			local pathLower = string.lower(path)
+			if string.find(pathLower, "guardian", 1, true) and string.find(pathLower, "diamond", 1, true) then
+				return true
+			end
+		end
+
+		return false
+	end
+
+	local function createEntityTracker(options)
+		return createTracker({
+			settingsKey = options.settingsKey,
+			title = options.title,
+			caption = options.caption,
+			live = true,
+			mergeRadius = 8,
+			getPart = function(instance)
+				return instance:FindFirstChild("HumanoidRootPart")
+			end,
+			accept = options.accept,
+			captionFn = options.captionFn,
+		})
+	end
+
 	-- Beds are marked by a BedPosition attachment; a plain `Bed` model or part is
 	-- the fallback for maps that do not carry one.
 	Features.register("BedESP", createTracker({
@@ -1612,6 +1699,32 @@ do
 		oreName = "diamond",
 	}))
 
+	Features.register("DiamondGuardianESP", createEntityTracker({
+		settingsKey = "diamondGuardianEsp",
+		title = "Diamond Guardian ESP",
+		caption = "DIAMOND GUARDIAN",
+		accept = function(instance, lowered)
+			local path
+			local pathOk = pcall(function()
+				path = instance:GetFullName()
+			end)
+			if isDiamondGuardian(instance, pathOk and path or nil) then
+				return "guardian"
+			end
+			return nil
+		end,
+		captionFn = function(entry, settings)
+			local humanoid = entry.instance:FindFirstChildOfClass("Humanoid")
+			if humanoid and humanoid.Health <= 0 then
+				return nil
+			end
+			if settings.showHealth and humanoid then
+				return string.format("DIAMOND GUARDIAN  [%.0f HP]", humanoid.Health)
+			end
+			return "DIAMOND GUARDIAN"
+		end,
+	}))
+
 	function Features.listItemDrops()
 		Log.info("Workspace.ItemDrops:")
 		for _, child in pairs(itemDropScanList()) do
@@ -1620,6 +1733,31 @@ do
 			end)
 			Log.info(string.format("  [%s] %s", child.ClassName, pathOk and path or child.Name))
 		end
+	end
+
+	function Features.probeEntities(needle)
+		needle = string.lower(needle or "guardian")
+		local descendants = workspaceDescendants()
+		if not descendants then
+			return
+		end
+
+		local matched = 0
+		for _, model in pairs(descendants) do
+			if model:IsA("Model")
+				and model:FindFirstChild("HumanoidRootPart")
+				and model:FindFirstChildOfClass("Humanoid")
+				and not isPlayerCharacter(model)
+				and string.find(string.lower(model.Name), needle, 1, true) then
+				matched = matched + 1
+				local pathOk, path = pcall(function()
+					return model:GetFullName()
+				end)
+				Log.info(string.format("  [%s] %s", model.Name, pathOk and path or "?"))
+			end
+		end
+
+		Log.info(string.format("%d entity model(s) matched '%s'", matched, needle))
 	end
 end
 
