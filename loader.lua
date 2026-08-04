@@ -3,13 +3,15 @@
 
 	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/main/loader.lua?t=" .. tick()))()
 
-	Or load the script directly (recommended if the loader serves an old cache):
+	If GitHub CDN is stale, load by commit (always fresh):
 
-	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/main/Scripts/Bedwars.lua?t=" .. tick()))()
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/2c8c911/Scripts/Bedwars.lua?t=" .. tick()))()
 ]]
 
-local LOADER_VERSION = "3"
+local LOADER_VERSION = "4"
 local BASE = "https://raw.githubusercontent.com/90dvd/lurk/main/Scripts/Bedwars.lua"
+-- Bypasses raw.githubusercontent.com/main/ CDN lag (update on each release).
+local FALLBACK = "https://raw.githubusercontent.com/90dvd/lurk/2c8c911/Scripts/Bedwars.lua"
 local CACHE = "lurk/Bedwars.lua"
 local MIN_VERSION = "1.6.5"
 
@@ -57,19 +59,39 @@ local function versionAtLeast(version, minimum)
 	return true
 end
 
+local function acceptDownload(body)
+	if not body then
+		return nil, nil
+	end
+	local version = parseVersion(body)
+	if versionAtLeast(version, MIN_VERSION) then
+		return body, version
+	end
+	return nil, version
+end
+
 local source = nil
 for attempt = 1, 5 do
-	local body = fetch(BASE .. "?t=" .. tick() .. "&loader=" .. LOADER_VERSION .. "&try=" .. attempt)
+	local body, version = acceptDownload(fetch(BASE .. "?t=" .. tick() .. "&loader=" .. LOADER_VERSION .. "&try=" .. attempt))
 	if body then
-		local version = parseVersion(body)
-		if versionAtLeast(version, MIN_VERSION) then
-			source = body
-			print("[lurk] downloaded v" .. tostring(version))
-			break
-		end
+		source = body
+		print("[lurk] downloaded v" .. tostring(version) .. " (main)")
+		break
+	end
+	if version then
 		warn("[lurk] CDN still serving v" .. tostring(version) .. " (need v" .. MIN_VERSION .. "+), retry " .. attempt .. "/5")
 	end
 	wait(0.5)
+end
+
+if not source then
+	local body, version = acceptDownload(fetch(FALLBACK .. "?t=" .. tick() .. "&loader=" .. LOADER_VERSION .. "&fb=1"))
+	if body then
+		source = body
+		print("[lurk] downloaded v" .. tostring(version) .. " (commit fallback)")
+	else
+		warn("[lurk] main CDN stale" .. (version and (" (v" .. version .. ")") or "") .. ", commit fallback failed too")
+	end
 end
 
 if source then
@@ -77,9 +99,8 @@ if source then
 		writefile(CACHE, source)
 	end)
 else
-	warn("[lurk] download failed or CDN too stale after 5 tries")
-	warn("[lurk] paste this instead:")
-	warn('[lurk] loadstring(game:HttpGet("' .. BASE .. '?t=" .. tick()))()')
+	warn("[lurk] download failed — try commit URL:")
+	warn('[lurk] loadstring(game:HttpGet("' .. FALLBACK .. '?t=" .. tick()))()')
 end
 
 if not source then
