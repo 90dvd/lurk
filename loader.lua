@@ -8,7 +8,7 @@
 	loadstring(game:HttpGet("https://raw.githubusercontent.com/90dvd/lurk/main/Scripts/Bedwars.lua?t=" .. tick()))()
 ]]
 
-local LOADER_VERSION = "2"
+local LOADER_VERSION = "3"
 local BASE = "https://raw.githubusercontent.com/90dvd/lurk/main/Scripts/Bedwars.lua"
 local CACHE = "lurk/Bedwars.lua"
 local MIN_VERSION = "1.6.4"
@@ -58,25 +58,28 @@ local function versionAtLeast(version, minimum)
 end
 
 local source = nil
-for attempt = 1, 3 do
-	source = fetch(BASE .. "?t=" .. tick() .. "&loader=" .. LOADER_VERSION .. "&try=" .. attempt)
-	if source then
-		break
+for attempt = 1, 5 do
+	local body = fetch(BASE .. "?t=" .. tick() .. "&loader=" .. LOADER_VERSION .. "&try=" .. attempt)
+	if body then
+		local version = parseVersion(body)
+		if versionAtLeast(version, MIN_VERSION) then
+			source = body
+			print("[lurk] downloaded v" .. tostring(version))
+			break
+		end
+		warn("[lurk] CDN still serving v" .. tostring(version) .. " (need v" .. MIN_VERSION .. "+), retry " .. attempt .. "/5")
 	end
-	wait(0.35)
+	wait(0.5)
 end
 
 if source then
-	local version = parseVersion(source)
-	print("[lurk] downloaded v" .. tostring(version or "?"))
 	pcall(function()
 		writefile(CACHE, source)
 	end)
 else
-	warn("[lurk] download failed after 3 tries — not using cache (too old anyway)")
+	warn("[lurk] download failed or CDN too stale after 5 tries")
 	warn("[lurk] paste this instead:")
 	warn('[lurk] loadstring(game:HttpGet("' .. BASE .. '?t=" .. tick()))()')
-	source = nil
 end
 
 if not source then
