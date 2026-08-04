@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.6.1"
+local SCRIPT_VERSION = "1.6.2"
 
 --=============================================================================
 -- Environment
@@ -2503,6 +2503,11 @@ do
 		source = source:gsub("local TITLE_H = 42", "local TITLE_H = 0")
 
 		source = source:gsub(
+			'UI%.Title = cfg%.Title or "Wabi"',
+			'UI.Title = cfg.Title ~= nil and cfg.Title or ""'
+		)
+
+		source = source:gsub(
 			"local tabY0 = win%.y %+ TITLE_H %+ 10",
 			"local tabY0 = win.y + 14"
 		)
@@ -2571,32 +2576,53 @@ end]]
 		return source
 	end
 
-	local function loadLibrary()
-		if GUI.library and GUI.library.Loaded then
-			return GUI.library
+	local function destroyExistingLibrary()
+		if GUI.library and type(GUI.library.Destroy) == "function" then
+			pcall(function()
+				GUI.library:Destroy()
+			end)
 		end
+		if type(_G.__WabiSabi) == "table" and type(_G.__WabiSabi.Destroy) == "function" then
+			pcall(function()
+				_G.__WabiSabi:Destroy()
+			end)
+		end
+		_G.__WabiSabi = nil
+		_G.__WabiSabiToken = nil
+		WabiSabi = nil
+		GUI.library = nil
+	end
 
-		local source = game:HttpGet(WABI_SABI_URL)
+	local function loadLibrary()
+		destroyExistingLibrary()
+
+		local source = game:HttpGet(WABI_SABI_URL .. "?t=" .. tostring(math.floor(tick() * 1000)))
 		if type(source) ~= "string" or #source == 0 then
+			Log.warn("WabiSabi download failed")
 			return nil
 		end
 
 		source = patchWabiSabiSource(source)
 
-		local chunk = loadstring(source)
+		if not source:find("lurk: window chrome removed", 1, true) then
+			Log.warn("WabiSabi patch failed — title bar not removed")
+			return nil
+		end
+
+		local chunk = loadstring(source, "WabiSabi")
 		if type(chunk) ~= "function" then
+			Log.warn("WabiSabi loadstring failed")
 			return nil
 		end
 
 		local ok, library = pcall(chunk)
 		if not ok or type(library) ~= "table" then
-			library = WabiSabi
-		end
-		if type(library) ~= "table" then
+			Log.error("WabiSabi patched load failed:", tostring(library))
 			return nil
 		end
 
 		GUI.library = library
+		Log.info("WabiSabi loaded (patched, no title bar)")
 		return library
 	end
 
@@ -2691,7 +2717,7 @@ end]]
 			end
 		end)
 
-		Log.info("GUI ready — press Right Shift to toggle menu")
+		Log.info("GUI ready (v" .. SCRIPT_VERSION .. ") — Right Shift toggles menu")
 		return true
 	end
 end
