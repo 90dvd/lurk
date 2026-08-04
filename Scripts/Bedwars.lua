@@ -614,7 +614,7 @@ Config.path = "lurk/config.json"
 -- mergeDefaults only fills in missing keys, so a saved config would keep an old
 -- value forever after a default changes. Bump this whenever that must not
 -- happen and the stored file gets discarded instead.
-Config.version = 6
+Config.version = 7
 
 Config.defaults = {
 	version = Config.version,
@@ -839,6 +839,24 @@ do
 		rescanInterval = 1,
 		color = { 55, 230, 140 },
 	}
+
+	Config.defaults.diamondEsp = {
+		enabled = true,
+		toggleKey = Input.VK.F3,
+		box = false,
+		label = true,
+		distance = true,
+		tracer = false,
+		maxDistance = 0,
+		fontSize = 13,
+		rescanInterval = 1,
+		color = { 0, 191, 255 },
+	}
+
+	-- Every tracker queues its draw here so all labels project in one pass
+	-- with the same camera state — multiple RenderStepped hooks drift on jump.
+	local renderQueue = {}
+	local renderScheduled = false
 
 	-- Cosmetic previews and lobby props must never be drawn.
 	local EXCLUDED_PATHS = { "lockerpreview", "preview", "lobby", "viewmodel", "template" }
@@ -1296,7 +1314,7 @@ do
 			end
 
 			local viewport = camera.ViewportSize
-			local eye = Me.position() or camera.Position
+			local eye = (spec.live and camera.Position) or Me.position() or camera.Position
 			local baseColor = Color3.fromRGB(settings.color[1], settings.color[2], settings.color[3])
 			local ownColor = settings.ownColor
 				and Color3.fromRGB(settings.ownColor[1], settings.ownColor[2], settings.ownColor[3])
@@ -1322,17 +1340,22 @@ do
 				end
 
 				if drawIt then
-					-- A box needs all eight corners projected; a label only needs
-					-- the point above the object, which is eight times less work
-					-- per frame and is the default.
 					local minX, minY, maxX, maxY
+					local labelX, labelY
 
 					if settings.box then
 						minX, minY, maxX, maxY = projectBounds(entry.minimum, entry.maximum)
+						if minX then
+							labelX = (minX + maxX) * 0.5
+							labelY = minY - settings.fontSize - 2
+						end
 					else
 						local screen, onScreen = WorldToScreen(labelWorldPoint(entry))
 						if onScreen then
 							minX, minY, maxX, maxY = screen.X, screen.Y, screen.X, screen.Y
+							-- Center=true anchors on the ore; a fixed pixel offset
+							-- slides relative to the point when the camera moves.
+							labelX, labelY = screen.X, screen.Y
 						end
 					end
 
@@ -1365,7 +1388,7 @@ do
 								applyFontSize(slot.text, settings.fontSize)
 								slot.fontSize = settings.fontSize
 							end
-							slot.text.Position = Vector2.new((minX + maxX) * 0.5, minY - settings.fontSize - 2)
+							slot.text.Position = Vector2.new(labelX, labelY)
 							slot.text.Visible = true
 						else
 							slot.text.Visible = false
@@ -1466,13 +1489,58 @@ do
 				end
 			end, spec.settingsKey .. " scan")
 
-			Runtime.onRender(render, spec.settingsKey)
+			renderQueue[#renderQueue + 1] = Runtime.guard(render, spec.settingsKey)
+			if not renderScheduled then
+				renderScheduled = true
+				Runtime.onRender(function()
+					for _, draw in pairs(renderQueue) do
+						draw()
+					end
+				end, "world esp")
+			end
+
 			Runtime.onCleanup(function()
 				hideFrom(1)
 			end)
 		end
 
 		return tracker
+	end
+
+	local function itemDropScanList()
+		local drops = Workspace and Workspace:FindFirstChild("ItemDrops")
+		if not drops then
+			return {}
+		end
+		local ok, children = pcall(function()
+			return drops:GetChildren()
+		end)
+		return ok and children or {}
+	end
+
+	local function createItemDropTracker(options)
+		return createTracker({
+			settingsKey = options.settingsKey,
+			title = options.title,
+			caption = options.caption,
+			simplePart = true,
+			live = true,
+			mergeRadius = 0,
+			scanList = itemDropScanList,
+			accept = function(instance, lowered)
+				return instance:IsA("BasePart") and lowered == options.oreName
+			end,
+			decorate = function(entry)
+				local ok, amount = pcall(function()
+					return entry.instance:GetAttribute("Amount")
+				end)
+				if ok and type(amount) == "number" and amount > 1 then
+					entry.caption = options.caption .. " x" .. math.floor(amount)
+				else
+					entry.caption = options.caption
+				end
+			end,
+		})
 	end
 
 	-- Beds are marked by a BedPosition attachment; a plain `Bed` model or part is
@@ -1502,39 +1570,20 @@ do
 		end,
 	}))
 
-	-- BedWars drops ores as BaseParts named "emerald" under Workspace.ItemDrops.
-	-- Scanning all of Workspace also picks up chest slots and blocks — those are
-	-- not ores. The amount comes from the Amount attribute, not a merge count.
-	Features.register("EmeraldESP", createTracker({
+	-- BedWars drops ores as BaseParts under Workspace.ItemDrops — "emerald",
+	-- "diamond", "iron", etc. Blocks and chest slots never live in that folder.
+	Features.register("EmeraldESP", createItemDropTracker({
 		settingsKey = "emeraldEsp",
 		title = "Emerald ESP",
 		caption = "EMERALD",
-		simplePart = true,
-		live = true,
-		mergeRadius = 0,
-		scanList = function()
-			local drops = Workspace and Workspace:FindFirstChild("ItemDrops")
-			if not drops then
-				return {}
-			end
-			local ok, children = pcall(function()
-				return drops:GetChildren()
-			end)
-			return ok and children or {}
-		end,
-		accept = function(instance, lowered)
-			return instance:IsA("BasePart") and lowered == "emerald"
-		end,
-		decorate = function(entry)
-			local ok, amount = pcall(function()
-				return entry.instance:GetAttribute("Amount")
-			end)
-			if ok and type(amount) == "number" and amount > 1 then
-				entry.caption = "EMERALD x" .. math.floor(amount)
-			else
-				entry.caption = "EMERALD"
-			end
-		end,
+		oreName = "emerald",
+	}))
+
+	Features.register("DiamondESP", createItemDropTracker({
+		settingsKey = "diamondEsp",
+		title = "Diamond ESP",
+		caption = "DIAMOND",
+		oreName = "diamond",
 	}))
 end
 
