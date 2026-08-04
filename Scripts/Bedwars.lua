@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.6.3"
+local SCRIPT_VERSION = "1.6.4"
 
 --=============================================================================
 -- Environment
@@ -2331,7 +2331,7 @@ do
 			child._lurkHidden = true
 		end
 		if type(header.SetDescription) == "function" then
-			header:SetDescription("Right-click for options")
+			header:SetDescription("Click title to expand options")
 		end
 	end
 
@@ -2346,9 +2346,9 @@ do
 		end
 		if group.header and type(group.header.SetDescription) == "function" then
 			if group.expanded then
-				group.header:SetDescription("Right-click to collapse")
+				group.header:SetDescription("Click title to collapse")
 			else
-				group.header:SetDescription("Right-click for options")
+				group.header:SetDescription("Click title to expand options")
 			end
 		end
 	end
@@ -2430,7 +2430,7 @@ do
 
 		local header = tab:AddToggle({
 			Title = panel.title,
-			Description = "Right-click for options",
+			Description = "Click title to expand options",
 			Default = featureSettings.enabled == true,
 			Callback = function(enabled)
 				featureSettings.enabled = enabled
@@ -2513,20 +2513,6 @@ do
 		)
 
 		source = source:gsub(
-			"local Input = { mx = 0, my = 0, down = false, prevDown = false, clicked = false, keys = {} }",
-			"local Input = { mx = 0, my = 0, down = false, prevDown = false, clicked = false, rightDown = false, prevRightDown = false, rightClicked = false, keys = {} }"
-		)
-
-		source = source:gsub(
-			"Input.clicked = Input.down and not Input.prevDown\nend",
-			[[Input.clicked = Input.down and not Input.prevDown
-    Input.rightDown = type(ismouse2pressed) == "function" and ismouse2pressed() or false
-    Input.rightClicked = Input.rightDown and not Input.prevRightDown
-    Input.prevRightDown = Input.rightDown
-end]]
-		)
-
-		source = source:gsub(
 			"elseif inBounds%(win%.x, win%.y, win%.w %- 120, TITLE_H%) then",
 			"elseif inBounds(win.x, win.y, win.w - 120, math.max(TITLE_H, 36)) then"
 		)
@@ -2560,15 +2546,45 @@ end]]
         end
         springStep%(el%.anim, dt)]],
 			[[        if hovered and Input.clicked and not chipHit then
-            el.value = not el.value
-            el.anim.goal = el.value and 1 or 0
-            safe(el.callback, el.value)
-            safe(el.changed, el.value)
-        end
-        if hovered and Input.rightClicked and el._lurkCollapseGroup and _G.LurkCollapse then
-            _G.LurkCollapse.toggle(el._lurkCollapseGroup)
+            local pillHit = not block and inBounds(px, py, pillW, pillH)
+            if el._lurkCollapseGroup and _G.LurkCollapse and not pillHit then
+                _G.LurkCollapse.toggle(el._lurkCollapseGroup)
+            else
+                el.value = not el.value
+                el.anim.goal = el.value and 1 or 0
+                safe(el.callback, el.value)
+                safe(el.changed, el.value)
+            end
         end
         springStep(el.anim, dt)]]
+		)
+
+		source = source:gsub(
+			[[        if hovered and Input.clicked and not active then
+            State.ActiveTab = i; State.Overlay = nil; State.Focused = nil; State.TabCurtain.v = 1
+            State.ContentSlide.v = 14; State.ContentSlide.goal = 0
+        end]],
+			[[        if hovered and Input.clicked and not active then
+            State.ActiveTab = i; State.Overlay = nil; State.Focused = nil
+            State.TabCurtain.v = 0; State.TabCurtain.goal = 0
+            State.ContentSlide.v = 0; State.ContentSlide.goal = 0
+            t.scroll = 0
+        end]]
+		)
+
+		source = source:gsub(
+			[[    springStep(State.TabCurtain, dt)
+    springStep(State.ContentSlide, dt)
+    if State.TabCurtain.v > 0.01 then
+        rect("win.curtain", win.x + RAIL_W + 1, cvy, win.w - RAIL_W - 1, cvh, Theme.WindowBg, math.min(1, State.TabCurtain.v), 50, 0)
+    end]],
+			[[    State.TabCurtain.v = 0; State.TabCurtain.goal = 0
+    State.ContentSlide.v = 0; State.ContentSlide.goal = 0]]
+		)
+
+		source = source:gsub(
+			"Input%.prevDown = Input%.down\n            task%.wait%(%)",
+			"Input.prevDown = Input.down\n            task.wait(State.Minimized and 0.04 or 0)"
 		)
 
 		source = removeWindowChrome(source)
