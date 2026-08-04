@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.4.8"
+local SCRIPT_VERSION = "1.4.9"
 
 --=============================================================================
 -- Environment
@@ -1423,6 +1423,10 @@ do
 		local tracker = { entries = {}, stats = {} }
 		local pool = {}
 
+		local function snapScreen(value)
+			return math.floor(value + 0.5)
+		end
+
 		local function acquire(index)
 			local slot = pool[index]
 			if slot then
@@ -1430,16 +1434,21 @@ do
 			end
 
 			local text = Draw.text({ Center = true, Outline = true, Visible = false, ZIndex = 3 })
+			local distanceText = Draw.text({ Center = true, Outline = true, Visible = false, ZIndex = 3 })
 			if type(Drawing.Fonts) == "table" and Drawing.Fonts.Monospace then
 				pcall(function()
 					text.Font = Drawing.Fonts.Monospace
+					distanceText.Font = Drawing.Fonts.Monospace
 				end)
 			end
 
 			slot = {
 				box = Draw.square({ Filled = false, Thickness = 1, Visible = false, ZIndex = 2 }),
 				text = text,
+				distanceText = distanceText,
 				tracer = Draw.line({ Thickness = 1, Visible = false, ZIndex = 1 }),
+				captionText = "",
+				distanceLabel = "",
 			}
 
 			pool[index] = slot
@@ -1451,6 +1460,7 @@ do
 				local slot = pool[position]
 				slot.box.Visible = false
 				slot.text.Visible = false
+				slot.distanceText.Visible = false
 				slot.tracer.Visible = false
 			end
 		end
@@ -1468,16 +1478,27 @@ do
 			return nil
 		end
 
-		local function projectPoint(world)
+		local function projectPoint(world, viewport)
 			if not world then
 				return nil
 			end
 
 			local screen, onScreen = WorldToScreen(world)
-			if not screen or typeof(screen) ~= "Vector2" or not onScreen then
+			if not screen or typeof(screen) ~= "Vector2" then
 				return nil
 			end
-			return screen.X, screen.Y
+
+			if not onScreen and viewport then
+				if screen.X < -64 or screen.Y < -64
+					or screen.X > viewport.X + 64
+					or screen.Y > viewport.Y + 64 then
+					return nil
+				end
+			elseif not onScreen then
+				return nil
+			end
+
+			return snapScreen(screen.X), snapScreen(screen.Y)
 		end
 
 		function tracker.scan()
@@ -1501,7 +1522,11 @@ do
 			end
 
 			local viewport = camera.ViewportSize
-			local eye = (spec.live and camera.Position) or Me.position() or camera.Position
+			pcall(function()
+				local _ = camera.Position
+				local _ = viewport
+			end)
+			local eye = camera.Position or Me.position()
 			local baseColor = Color3.fromRGB(settings.color[1], settings.color[2], settings.color[3])
 			local ownColor = settings.ownColor
 				and Color3.fromRGB(settings.ownColor[1], settings.ownColor[2], settings.ownColor[3])
@@ -1532,12 +1557,16 @@ do
 					local minX, minY, maxX, maxY
 					local labelX, labelY
 
-					labelX, labelY = projectPoint(point)
+					labelX, labelY = projectPoint(point, viewport)
 
 					if settings.box then
 						minX, minY, maxX, maxY = projectBounds(entry.minimum, entry.maximum)
+						if minX then
+							minX, minY = snapScreen(minX), snapScreen(minY)
+							maxX, maxY = snapScreen(maxX), snapScreen(maxY)
+						end
 						if minX and not labelX then
-							labelX = (minX + maxX) * 0.5
+							labelX = snapScreen((minX + maxX) * 0.5)
 							labelY = minY
 						end
 					elseif labelX then
@@ -1567,20 +1596,35 @@ do
 								if spec.showCount and entry.count and entry.count > 1 then
 									caption = caption .. " x" .. entry.count
 								end
-								if settings.distance then
-									caption = caption .. string.format("  [%3dm]", math.floor(distance + 0.5))
-								end
 
-								slot.text.Text = caption
+								if slot.captionText ~= caption then
+									slot.text.Text = caption
+									slot.captionText = caption
+								end
 								slot.text.Color = color
 								if slot.fontSize ~= settings.fontSize then
 									applyFontSize(slot.text, settings.fontSize)
+									applyFontSize(slot.distanceText, settings.fontSize - 1)
 									slot.fontSize = settings.fontSize
 								end
 								slot.text.Position = Vector2.new(labelX, labelY)
 								slot.text.Visible = true
+
+								if settings.distance then
+									local distLabel = string.format("[%3dm]", math.floor(distance + 0.5))
+									if slot.distanceLabel ~= distLabel then
+										slot.distanceText.Text = distLabel
+										slot.distanceLabel = distLabel
+									end
+									slot.distanceText.Color = color
+									slot.distanceText.Position = Vector2.new(labelX, labelY + settings.fontSize + 2)
+									slot.distanceText.Visible = true
+								else
+									slot.distanceText.Visible = false
+								end
 							else
 								slot.text.Visible = false
+								slot.distanceText.Visible = false
 							end
 						else
 							slot.text.Visible = false
@@ -2213,6 +2257,14 @@ do
 	end
 
 	function Features.flushRender()
+		local camera = Me.camera()
+		if camera then
+			pcall(function()
+				local _ = camera.Position
+				local _ = camera.ViewportSize
+			end)
+		end
+
 		for _, draw in pairs(renderQueue) do
 			draw()
 		end
@@ -2257,13 +2309,12 @@ local function main()
 		Runtime.unload()
 	end)
 
-	-- Input and ESP share one RenderStepped hook so WorldToScreen uses the same
-	-- camera snapshot — separate hooks made labels slide on jump/camera shake.
+	-- Draw ESP before input so WorldToScreen matches the current camera frame.
 	Runtime.onRender(function()
 		Runtime.frame = Runtime.frame + 1
+		Features.flushRender()
 		Input.update()
 		runBinds()
-		Features.flushRender()
 	end, "frame")
 
 	for _, feature in pairs(Features.list) do
