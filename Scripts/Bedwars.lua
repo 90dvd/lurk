@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.4.7"
+local SCRIPT_VERSION = "1.4.8"
 
 --=============================================================================
 -- Environment
@@ -870,9 +870,6 @@ do
 		maxDistance = 0,
 		fontSize = 13,
 		rescanInterval = 2,
-		-- Optional session Address; leave empty for fast load, then pin in-game:
-		-- LURK.Features.pinGuardianAddress("0x...")
-		watchAddress = "",
 		color = { 120, 200, 255 },
 	}
 
@@ -1841,38 +1838,29 @@ do
 	end
 
 	local function isDiamondGuardian(instance, path)
-		if isPinnedGuardian(instance) then
-			if isPlayerCharacter(instance) then
-				return false
-			end
-			return entityRootPart(instance) ~= nil
-		end
-
-		if not isHostileEntityModel(instance) then
-			return false
-		end
-		if isKnownKitEntity(instance) then
+		if not instance:IsA("Model") or isPlayerCharacter(instance) then
 			return false
 		end
 
 		local lowered = string.lower(instance.Name)
 		local pathLower = path and string.lower(path) or ""
 
+		-- BedWars spawns the mob as a direct Workspace child named "Diamond Guardian".
+		if lowered == "diamond guardian" or lowered == "diamond_guardian" then
+			return entityRootPart(instance) ~= nil
+		end
+
+		if isPinnedGuardian(instance) then
+			return entityRootPart(instance) ~= nil
+		end
+
+		if not isHostileEntityModel(instance) or isKnownKitEntity(instance) then
+			return false
+		end
+
 		local humanoid = entityHumanoid(instance)
 		if humanoid and humanoid.MaxHealth >= 400 then
 			return true
-		end
-
-		for _, key in pairs({ "EntityType", "entityType", "MobType", "mobType", "Type" }) do
-			local ok, value = pcall(function()
-				return instance:GetAttribute(key)
-			end)
-			if ok and type(value) == "string" then
-				local attrLower = string.lower(value)
-				if string.find(attrLower, "diamond", 1, true) and string.find(attrLower, "guardian", 1, true) then
-					return true
-				end
-			end
 		end
 
 		if string.find(pathLower, "guardian", 1, true) then
@@ -1881,7 +1869,7 @@ do
 			end
 		end
 
-		if lowered == "diamond_guardian" or lowered == "entity model" then
+		if lowered == "entity model" then
 			return true
 		end
 		if string.find(lowered, "diamond", 1, true) and string.find(lowered, "guardian", 1, true) then
@@ -1894,8 +1882,8 @@ do
 		return false
 	end
 
-	-- Rise scans Workspace:GetChildren() for entities, not the full descendant tree.
-	local function entityScanList()
+	-- Rise: hostile entities are direct Workspace children — no full-map walk.
+	local function guardianScanList()
 		local list = {}
 		local seen = {}
 
@@ -1935,6 +1923,7 @@ do
 				return Workspace:FindFirstChild(folderName)
 			end)
 			if okFolder and folder then
+				add(folder)
 				local okDesc, descendants = pcall(function()
 					return folder:GetDescendants()
 				end)
@@ -1946,14 +1935,17 @@ do
 			end
 		end
 
-		for target, _ in pairs(pinnedGuardianAddresses) do
-			local cached = cachedPinnedGuardian(target)
-			if cached then
-				add(cached)
+		for target, model in pairs(pinnedGuardianModels) do
+			if model and cachedPinnedGuardian(target) then
+				add(model)
 			end
 		end
 
 		return list
+	end
+
+	local function entityScanList()
+		return guardianScanList()
 	end
 
 	local function createEntityTracker(options)
@@ -1964,8 +1956,7 @@ do
 			live = true,
 			entityPart = true,
 			mergeByAddress = true,
-			deferScan = options.deferScan,
-			scanList = options.scanList or entityScanList,
+			scanList = options.scanList or guardianScanList,
 			getPart = function(instance)
 				return entityRootPart(instance)
 			end,
@@ -2021,7 +2012,6 @@ do
 		settingsKey = "diamondGuardianEsp",
 		title = "Diamond Guardian ESP",
 		caption = "DIAMOND GUARDIAN",
-		deferScan = true,
 		accept = function(instance, lowered)
 			local path
 			local pathOk = pcall(function()
@@ -2282,18 +2272,6 @@ local function main()
 			if not ok then
 				Log.error("feature " .. tostring(feature.name) .. " failed to init:", err)
 			end
-		end
-	end
-
-	do
-		local settings = Config.data.diamondGuardianEsp
-		if settings and type(settings.watchAddress) == "string" and settings.watchAddress ~= "" then
-			Compat.spawn(function()
-				Features.pinGuardianAddress(settings.watchAddress)
-			end)
-			Runtime.every(settings.rescanInterval or 2, function()
-				Features.pinGuardianAddress(settings.watchAddress, true)
-			end, "guardian watch address")
 		end
 	end
 
