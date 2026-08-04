@@ -614,7 +614,7 @@ Config.path = "lurk/config.json"
 -- mergeDefaults only fills in missing keys, so a saved config would keep an old
 -- value forever after a default changes. Bump this whenever that must not
 -- happen and the stored file gets discarded instead.
-Config.version = 2
+Config.version = 3
 
 Config.defaults = {
 	version = Config.version,
@@ -804,12 +804,14 @@ function Features.register(name, feature)
 end
 
 --=============================================================================
--- Bed ESP (Roblox BedWars)
+-- World ESP (Roblox BedWars)
+--
+-- One scan-and-draw implementation for every ESP. A tracker only says which
+-- instances it accepts and how an entry is labelled; bounding boxes,
+-- deduplication, projection and the drawing pool are shared.
 --=============================================================================
 
 do
-	local BedESP = Features.register("BedESP", {})
-
 	Config.defaults.bedEsp = {
 		enabled = true,
 		toggleKey = Input.VK.B,
@@ -821,24 +823,49 @@ do
 		maxDistance = 0,
 		fontSize = 14,
 		rescanInterval = 4,
-		enemyColor = { 255, 75, 75 },
+		color = { 255, 75, 75 },
 		ownColor = { 90, 220, 120 },
 	}
 
-	-- Beds are found through their `BedPosition` attachment; the plain `Bed`
-	-- name is a fallback for maps that do not carry the attachment.
-	local ANCHOR_NAMES = { bedposition = true }
-	local BED_NAMES = { bed = true }
+	Config.defaults.emeraldEsp = {
+		enabled = true,
+		toggleKey = Input.VK.F2,
+		box = false,
+		label = true,
+		distance = true,
+		tracer = false,
+		maxDistance = 0,
+		fontSize = 13,
+		rescanInterval = 1,
+		color = { 55, 230, 140 },
+	}
 
-	-- Cosmetic bed previews live under LockerPreview and must not be drawn.
+	-- Cosmetic previews and lobby props must never be drawn.
 	local EXCLUDED_PATHS = { "lockerpreview", "preview", "lobby", "viewmodel", "template" }
 
 	local TEAM_ATTRIBUTES = { "Team", "TeamName", "BedTeam", "team" }
 
-	-- Studs within which two hits are treated as the same bed.
-	local MERGE_RADIUS = 14
+	-- Walking every Workspace descendant is the expensive part, so trackers
+	-- scanning at different intervals share one recent snapshot.
+	local snapshot = { at = 0, list = nil }
 
-	BedESP.beds = {}
+	local function workspaceDescendants()
+		local now = tick()
+		if snapshot.list and now - snapshot.at < 0.5 then
+			return snapshot.list
+		end
+
+		local ok, list = pcall(function()
+			return Workspace:GetDescendants()
+		end)
+		if not ok then
+			return nil
+		end
+
+		snapshot.at = now
+		snapshot.list = list
+		return list
+	end
 
 	local function isExcluded(path)
 		local lowered = string.lower(path)
@@ -974,34 +1001,19 @@ do
 		return nil
 	end
 
-	function BedESP.scan()
+	local function scan(spec)
 		local found = {}
-		if not Workspace then
-			return found
-		end
-
-		local ok, descendants = pcall(function()
-			return Workspace:GetDescendants()
-		end)
-		if not ok then
-			return found
-		end
-
-		local myTeam
-		local me = Me.player()
-		if me and me.Team then
-			myTeam = me.Team.Name
-		end
-
 		local stats = { candidates = 0, excluded = 0, unpositioned = 0, duplicates = 0 }
 
-		for _, descendant in pairs(descendants) do
-			local lowered = string.lower(descendant.Name)
-			local isAnchor = ANCHOR_NAMES[lowered] == true
-			local isBed = BED_NAMES[lowered] == true
-				and (descendant:IsA("Model") or descendant:IsA("BasePart"))
+		local descendants = Workspace and workspaceDescendants()
+		if not descendants then
+			return found, stats
+		end
 
-			if isAnchor or isBed then
+		for _, descendant in pairs(descendants) do
+			local match = spec.accept(descendant, string.lower(descendant.Name))
+
+			if match then
 				stats.candidates = stats.candidates + 1
 
 				local pathOk, path = pcall(function()
@@ -1019,18 +1031,17 @@ do
 					if part or root then
 						local minimum, maximum = computeBounds(root, part)
 						if minimum then
-							local team = resolveTeam(descendant)
 							found[#found + 1] = {
+								instance = descendant,
 								root = root,
 								part = part,
 								minimum = minimum,
 								maximum = maximum,
 								center = (minimum + maximum) * 0.5,
 								span = (maximum - minimum).Magnitude,
-								team = team,
-								isOwn = team ~= nil and myTeam ~= nil and string.lower(team) == string.lower(myTeam),
 								path = path,
-								fromAnchor = isAnchor,
+								match = match,
+								count = 1,
 							}
 						else
 							stats.unpositioned = stats.unpositioned + 1
@@ -1040,100 +1051,45 @@ do
 			end
 		end
 
-		-- A single bed carries several matching instances (two BedPosition
-		-- anchors plus sometimes the model itself), and they resolve to different
-		-- roots, so their bounding boxes and centres differ by a few studs. Two
-		-- hits this close together are therefore the same bed. Two real beds are
-		-- never within this radius of each other.
+		-- One object carries several matching instances — a bed has two
+		-- BedPosition anchors plus sometimes the model itself — and they resolve
+		-- to different roots, so their boxes and centres differ by a few studs.
+		-- Hits this close together are therefore the same object.
+		local radius = spec.mergeRadius or 14
 		local merged = {}
 
-		for _, bed in pairs(found) do
+		for _, entry in pairs(found) do
 			local absorbed = false
 
 			for index, kept in pairs(merged) do
-				if Util.distance(bed.center, kept.center) <= MERGE_RADIUS then
+				if Util.distance(entry.center, kept.center) <= radius then
 					absorbed = true
 					stats.duplicates = stats.duplicates + 1
+					kept.count = kept.count + 1
 
 					-- Prefer the tighter box: a larger one usually means a parent
-					-- container got picked up instead of the bed itself.
-					if bed.span < kept.span then
-						merged[index] = bed
+					-- container got picked up instead of the object itself.
+					if entry.span < kept.span then
+						entry.count = kept.count
+						merged[index] = entry
 					end
 					break
 				end
 			end
 
 			if not absorbed then
-				merged[#merged + 1] = bed
+				merged[#merged + 1] = entry
 			end
 		end
 
-		BedESP.stats = stats
-		return merged
-	end
-
-	function BedESP.dump()
-		local stats = BedESP.stats or {}
-		Log.info(string.format("%d bed(s) drawn | candidates=%s excluded=%s duplicates=%s without position=%s",
-			#BedESP.beds,
-			tostring(stats.candidates),
-			tostring(stats.excluded),
-			tostring(stats.duplicates),
-			tostring(stats.unpositioned)))
-
-		for index, bed in pairs(BedESP.beds) do
-			Log.info(string.format("  %d. %s | team=%s own=%s anchor=%s span=%.1f | %s",
-				index,
-				bed.path,
-				tostring(bed.team),
-				tostring(bed.isOwn),
-				tostring(bed.fromAnchor),
-				bed.span,
-				Util.vectorToString(bed.center, 0)))
-		end
-	end
-
-	-- Lists every Workspace instance whose name mentions a bed, so the real
-	-- hierarchy can be confirmed when the scan comes up empty.
-	function BedESP.probe(needle, limit)
-		needle = string.lower(needle or "bed")
-		limit = limit or 60
-
-		local ok, descendants = pcall(function()
-			return Workspace:GetDescendants()
-		end)
-		if not ok then
-			Log.error("probe: Workspace:GetDescendants() failed")
-			return
-		end
-
-		local matched = 0
-		for _, descendant in pairs(descendants) do
-			if string.find(string.lower(descendant.Name), needle, 1, true) then
-				matched = matched + 1
-				if matched <= limit then
-					local pathOk, path = pcall(function()
-						return descendant:GetFullName()
-					end)
-					local position = partExtents(descendant)
-
-					Log.info(string.format("  [%s]%s %s%s",
-						descendant.ClassName,
-						position and "" or " (no position)",
-						pathOk and path or descendant.Name,
-						(pathOk and isExcluded(path)) and "  <- excluded" or ""))
-				end
+		if spec.decorate then
+			for _, entry in pairs(merged) do
+				pcall(spec.decorate, entry)
 			end
 		end
 
-		Log.info(string.format("%d instance(s) matched '%s'%s",
-			matched,
-			needle,
-			matched > limit and string.format(" (showing %d)", limit) or ""))
+		return merged, stats
 	end
-
-	local pool = {}
 
 	-- The docs call the text size FontSize, but the VM rejects that name on at
 	-- least some builds, so the actual property is probed once and remembered.
@@ -1164,41 +1120,6 @@ do
 		Log.warn("no usable text size property on this Matcha build")
 	end
 
-	local function acquire(index)
-		local slot = pool[index]
-		if slot then
-			return slot
-		end
-
-		local text = Draw.text({ Center = true, Outline = true, Visible = false, ZIndex = 3 })
-		if type(Drawing.Fonts) == "table" and Drawing.Fonts.Monospace then
-			pcall(function()
-				text.Font = Drawing.Fonts.Monospace
-			end)
-		end
-
-		slot = {
-			box = Draw.square({ Filled = false, Thickness = 1, Visible = false, ZIndex = 2 }),
-			text = text,
-			tracer = Draw.line({ Thickness = 1, Visible = false, ZIndex = 1 }),
-		}
-
-		pool[index] = slot
-		return slot
-	end
-
-	local function hideSlot(slot)
-		slot.box.Visible = false
-		slot.text.Visible = false
-		slot.tracer.Visible = false
-	end
-
-	local function hideFrom(index)
-		for position = index, #pool do
-			hideSlot(pool[position])
-		end
-	end
-
 	local function projectBounds(minimum, maximum)
 		local minX, minY = math.huge, math.huge
 		local maxX, maxY = -math.huge, -math.huge
@@ -1225,114 +1146,295 @@ do
 		return minX, minY, maxX, maxY
 	end
 
-	local function render()
-		local settings = Config.data.bedEsp
+	-- spec:
+	--   settingsKey  key under Config.data holding this tracker's settings
+	--   title        name used in the toggle notification
+	--   caption      default label drawn next to an entry
+	--   accept       (instance, loweredName) -> truthy when the instance counts
+	--   mergeRadius  studs within which two hits are the same object
+	--   dynamic      re-read positions every frame, for objects that move
+	--   showCount    append "xN" when several hits were merged into one entry
+	--   decorate     optional; may set entry.caption, entry.isOwn, entry.hidden
+	local function createTracker(spec)
+		local tracker = { entries = {}, stats = {} }
+		local pool = {}
 
-		if not settings.enabled then
-			hideFrom(1)
-			return
-		end
-
-		local camera = Me.camera()
-		if not camera then
-			hideFrom(1)
-			return
-		end
-
-		local viewport = camera.ViewportSize
-		local eye = Me.position() or camera.Position
-		local enemyColor = Color3.fromRGB(settings.enemyColor[1], settings.enemyColor[2], settings.enemyColor[3])
-		local ownColor = Color3.fromRGB(settings.ownColor[1], settings.ownColor[2], settings.ownColor[3])
-		local used = 0
-
-		for _, bed in pairs(BedESP.beds) do
-			local drawIt = true
-
-			if settings.hideOwnTeam and bed.isOwn then
-				drawIt = false
+		local function acquire(index)
+			local slot = pool[index]
+			if slot then
+				return slot
 			end
 
-			local distance = 0
-			if drawIt and eye then
-				distance = Util.distance(eye, bed.center)
-				if settings.maxDistance > 0 and distance > settings.maxDistance then
+			local text = Draw.text({ Center = true, Outline = true, Visible = false, ZIndex = 3 })
+			if type(Drawing.Fonts) == "table" and Drawing.Fonts.Monospace then
+				pcall(function()
+					text.Font = Drawing.Fonts.Monospace
+				end)
+			end
+
+			slot = {
+				box = Draw.square({ Filled = false, Thickness = 1, Visible = false, ZIndex = 2 }),
+				text = text,
+				tracer = Draw.line({ Thickness = 1, Visible = false, ZIndex = 1 }),
+			}
+
+			pool[index] = slot
+			return slot
+		end
+
+		local function hideFrom(index)
+			for position = index, #pool do
+				local slot = pool[position]
+				slot.box.Visible = false
+				slot.text.Visible = false
+				slot.tracer.Visible = false
+			end
+		end
+
+		-- Dropped pickups move and vanish, so their bounds cannot be cached from
+		-- the scan. A gone instance yields no bounds and is simply skipped.
+		local function refresh(entry)
+			local minimum, maximum = computeBounds(entry.root, entry.part)
+			if not minimum then
+				return false
+			end
+
+			entry.minimum, entry.maximum = minimum, maximum
+			entry.center = (minimum + maximum) * 0.5
+			return true
+		end
+
+		function tracker.scan()
+			local entries, stats = scan(spec)
+			tracker.stats = stats
+			return entries
+		end
+
+		local function render()
+			local settings = Config.data[spec.settingsKey]
+
+			if not settings or not settings.enabled then
+				hideFrom(1)
+				return
+			end
+
+			local camera = Me.camera()
+			if not camera then
+				hideFrom(1)
+				return
+			end
+
+			local viewport = camera.ViewportSize
+			local eye = Me.position() or camera.Position
+			local baseColor = Color3.fromRGB(settings.color[1], settings.color[2], settings.color[3])
+			local ownColor = settings.ownColor
+				and Color3.fromRGB(settings.ownColor[1], settings.ownColor[2], settings.ownColor[3])
+				or baseColor
+			local used = 0
+
+			for _, entry in pairs(tracker.entries) do
+				local drawIt = not entry.hidden
+
+				if drawIt and settings.hideOwnTeam and entry.isOwn then
 					drawIt = false
 				end
-			end
+				if drawIt and spec.dynamic and not refresh(entry) then
+					drawIt = false
+				end
 
-			if drawIt then
-				local minX, minY, maxX, maxY = projectBounds(bed.minimum, bed.maximum)
-				if minX then
-					used = used + 1
-					local slot = acquire(used)
-					local color = bed.isOwn and ownColor or enemyColor
-
-					if settings.box then
-						slot.box.Color = color
-						slot.box.Position = Vector2.new(minX, minY)
-						slot.box.Size = Vector2.new(maxX - minX, maxY - minY)
-						slot.box.Visible = true
-					else
-						slot.box.Visible = false
+				local distance = 0
+				if drawIt and eye then
+					distance = Util.distance(eye, entry.center)
+					if settings.maxDistance > 0 and distance > settings.maxDistance then
+						drawIt = false
 					end
+				end
 
-					if settings.label then
-						local caption = bed.team and (string.upper(bed.team) .. " BED") or "BED"
-						if settings.distance then
-							caption = caption .. string.format("  [%dm]", math.floor(distance + 0.5))
+				if drawIt then
+					local minX, minY, maxX, maxY = projectBounds(entry.minimum, entry.maximum)
+					if minX then
+						used = used + 1
+						local slot = acquire(used)
+						local color = entry.isOwn and ownColor or baseColor
+
+						if settings.box then
+							slot.box.Color = color
+							slot.box.Position = Vector2.new(minX, minY)
+							slot.box.Size = Vector2.new(maxX - minX, maxY - minY)
+							slot.box.Visible = true
+						else
+							slot.box.Visible = false
 						end
 
-						slot.text.Text = caption
-						slot.text.Color = color
-						if slot.fontSize ~= settings.fontSize then
-							applyFontSize(slot.text, settings.fontSize)
-							slot.fontSize = settings.fontSize
-						end
-						slot.text.Position = Vector2.new((minX + maxX) * 0.5, minY - settings.fontSize - 2)
-						slot.text.Visible = true
-					else
-						slot.text.Visible = false
-					end
+						if settings.label then
+							local caption = entry.caption or spec.caption
+							if spec.showCount and entry.count and entry.count > 1 then
+								caption = caption .. " x" .. entry.count
+							end
+							if settings.distance then
+								caption = caption .. string.format("  [%dm]", math.floor(distance + 0.5))
+							end
 
-					if settings.tracer then
-						slot.tracer.Color = color
-						slot.tracer.From = Vector2.new(viewport.X * 0.5, viewport.Y)
-						slot.tracer.To = Vector2.new((minX + maxX) * 0.5, maxY)
-						slot.tracer.Visible = true
-					else
-						slot.tracer.Visible = false
+							slot.text.Text = caption
+							slot.text.Color = color
+							if slot.fontSize ~= settings.fontSize then
+								applyFontSize(slot.text, settings.fontSize)
+								slot.fontSize = settings.fontSize
+							end
+							slot.text.Position = Vector2.new((minX + maxX) * 0.5, minY - settings.fontSize - 2)
+							slot.text.Visible = true
+						else
+							slot.text.Visible = false
+						end
+
+						if settings.tracer then
+							slot.tracer.Color = color
+							slot.tracer.From = Vector2.new(viewport.X * 0.5, viewport.Y)
+							slot.tracer.To = Vector2.new((minX + maxX) * 0.5, maxY)
+							slot.tracer.Visible = true
+						else
+							slot.tracer.Visible = false
+						end
 					end
 				end
 			end
+
+			hideFrom(used + 1)
 		end
 
-		hideFrom(used + 1)
-	end
+		function tracker.dump()
+			local stats = tracker.stats or {}
+			Log.info(string.format("%s: %d drawn | candidates=%s excluded=%s duplicates=%s without position=%s",
+				spec.settingsKey,
+				#tracker.entries,
+				tostring(stats.candidates),
+				tostring(stats.excluded),
+				tostring(stats.duplicates),
+				tostring(stats.unpositioned)))
 
-	function BedESP.init()
-		local settings = Config.data.bedEsp
-
-		Input.bind(settings.toggleKey, function()
-			settings.enabled = not settings.enabled
-			Log.notify("Bed ESP " .. (settings.enabled and "on" or "off"), "lurk", 1.5)
-		end)
-
-		local lastCount = -1
-		Runtime.every(settings.rescanInterval, function()
-			BedESP.beds = BedESP.scan()
-			if #BedESP.beds ~= lastCount then
-				lastCount = #BedESP.beds
-				local stats = BedESP.stats or {}
-				Log.info(string.format("beds: %d drawn, %s candidate(s)",
-					lastCount, tostring(stats.candidates)))
+			for index, entry in pairs(tracker.entries) do
+				Log.info(string.format("  %d. %s | match=%s merged=%d span=%.1f team=%s own=%s | %s",
+					index,
+					entry.path,
+					tostring(entry.match),
+					entry.count or 1,
+					entry.span,
+					tostring(entry.team),
+					tostring(entry.isOwn),
+					Util.vectorToString(entry.center, 0)))
 			end
-		end, "bed scan")
+		end
 
-		Runtime.onRender(render, "bed esp")
-		Runtime.onCleanup(function()
-			hideFrom(1)
-		end)
+		-- Lists every Workspace instance whose name contains `needle`, so the real
+		-- hierarchy can be confirmed when the scan finds nothing or too much.
+		function tracker.probe(needle, limit)
+			needle = string.lower(needle or spec.caption)
+			limit = limit or 60
+
+			local descendants = workspaceDescendants()
+			if not descendants then
+				Log.error("probe: Workspace:GetDescendants() failed")
+				return
+			end
+
+			local matched = 0
+			for _, descendant in pairs(descendants) do
+				if string.find(string.lower(descendant.Name), needle, 1, true) then
+					matched = matched + 1
+					if matched <= limit then
+						local pathOk, path = pcall(function()
+							return descendant:GetFullName()
+						end)
+						local position = partExtents(descendant)
+
+						Log.info(string.format("  [%s]%s %s%s",
+							descendant.ClassName,
+							position and "" or " (no position)",
+							pathOk and path or descendant.Name,
+							(pathOk and isExcluded(path)) and "  <- excluded" or ""))
+					end
+				end
+			end
+
+			Log.info(string.format("%d instance(s) matched '%s'%s",
+				matched,
+				needle,
+				matched > limit and string.format(" (showing %d)", limit) or ""))
+		end
+
+		function tracker.init()
+			local settings = Config.data[spec.settingsKey]
+
+			if settings.toggleKey then
+				Input.bind(settings.toggleKey, function()
+					settings.enabled = not settings.enabled
+					Log.notify(spec.title .. " " .. (settings.enabled and "on" or "off"), "lurk", 1.5)
+				end)
+			end
+
+			local lastCount = -1
+			Runtime.every(settings.rescanInterval, function()
+				tracker.entries = tracker.scan()
+				if #tracker.entries ~= lastCount then
+					lastCount = #tracker.entries
+					Log.info(string.format("%s: %d drawn, %s candidate(s)",
+						spec.settingsKey, lastCount, tostring(tracker.stats.candidates)))
+				end
+			end, spec.settingsKey .. " scan")
+
+			Runtime.onRender(render, spec.settingsKey)
+			Runtime.onCleanup(function()
+				hideFrom(1)
+			end)
+		end
+
+		return tracker
 	end
+
+	-- Beds are marked by a BedPosition attachment; a plain `Bed` model or part is
+	-- the fallback for maps that do not carry one.
+	Features.register("BedESP", createTracker({
+		settingsKey = "bedEsp",
+		title = "Bed ESP",
+		caption = "BED",
+		mergeRadius = 14,
+		accept = function(instance, lowered)
+			if lowered == "bedposition" then
+				return "anchor"
+			end
+			if lowered == "bed" and (instance:IsA("Model") or instance:IsA("BasePart")) then
+				return "model"
+			end
+			return nil
+		end,
+		decorate = function(entry)
+			local team = resolveTeam(entry.instance)
+			entry.team = team
+			entry.caption = team and (string.upper(team) .. " BED") or "BED"
+
+			local me = Me.player()
+			local myTeam = me and me.Team and me.Team.Name
+			entry.isOwn = team ~= nil and myTeam ~= nil and string.lower(team) == string.lower(myTeam)
+		end,
+	}))
+
+	-- Emeralds appear both as static generators and as dropped pickups, so the
+	-- scan runs more often and positions are re-read every frame. The name is
+	-- matched as a substring because the exact naming differs per map.
+	Features.register("EmeraldESP", createTracker({
+		settingsKey = "emeraldEsp",
+		title = "Emerald ESP",
+		caption = "EMERALD",
+		mergeRadius = 4,
+		dynamic = true,
+		showCount = true,
+		accept = function(instance, lowered)
+			if string.find(lowered, "emerald", 1, true) then
+				return "name"
+			end
+			return nil
+		end,
+	}))
 end
 
 --=============================================================================
