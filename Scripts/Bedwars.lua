@@ -18,7 +18,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.6.7"
+local SCRIPT_VERSION = "1.6.8"
 
 --=============================================================================
 -- Environment
@@ -2503,10 +2503,12 @@ do
 			"elseif inBounds(win.x, win.y, win.w - 120, math.max(TITLE_H, 36)) then"
 		)
 
-		source = source:gsub(
-			"Outline = false %})",
-			"Outline = true }) -- lurk: matcha text outline"
-		)
+		local outlineFrom = "Outline = false })"
+		local outlineTo = "Outline = true }) -- lurk: matcha text outline"
+		local outlineStart = source:find(outlineFrom, 1, true)
+		if outlineStart then
+			source = source:sub(1, outlineStart - 1) .. outlineTo .. source:sub(outlineStart + #outlineFrom)
+		end
 
 		source = source:gsub(
 			[[        if hovered and Input.clicked and not active then
