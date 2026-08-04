@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.4.5"
+local SCRIPT_VERSION = "1.4.6"
 
 --=============================================================================
 -- Environment
@@ -1468,29 +1468,7 @@ do
 			end
 		end
 
-		local function refreshEntryWorld(entry)
-			if entry.part then
-				local position = partExtents(entry.part)
-				if position then
-					if entry.extent then
-						entry.center = position
-						entry.minimum = position - entry.extent
-						entry.maximum = position + entry.extent
-					elseif entry.minimum and entry.maximum then
-						local half = (entry.maximum - entry.minimum) * 0.5
-						entry.center = position + (entry.anchorOffset or Vector3.zero)
-						entry.minimum = entry.center - half
-						entry.maximum = entry.center + half
-					else
-						entry.center = position
-					end
-					return true
-				end
-			end
-			return entry.center ~= nil
-		end
-
-		local function labelWorldPoint(entry)
+		local function worldPoint(entry)
 			if entry.part then
 				local position = partExtents(entry.part)
 				if position then
@@ -1500,26 +1478,19 @@ do
 			if entry.center then
 				return entry.center
 			end
-			if entry.maximum then
-				return entry.maximum
-			end
 			return nil
 		end
 
-		local function projectWorldLabel(entry)
-			local world = labelWorldPoint(entry)
+		local function projectPoint(world)
 			if not world then
 				return nil
 			end
 
 			local screen, onScreen = WorldToScreen(world)
-			if not screen or typeof(screen) ~= "Vector2" then
+			if not screen or typeof(screen) ~= "Vector2" or not onScreen then
 				return nil
 			end
-			if onScreen then
-				return screen.X, screen.Y
-			end
-			return nil
+			return screen.X, screen.Y
 		end
 
 		function tracker.scan()
@@ -1556,13 +1527,15 @@ do
 				if drawIt and settings.hideOwnTeam and entry.isOwn then
 					drawIt = false
 				end
-				if drawIt and not refreshEntryWorld(entry) then
+
+				local point = drawIt and worldPoint(entry) or nil
+				if drawIt and not point then
 					drawIt = false
 				end
 
 				local distance = 0
 				if drawIt and eye then
-					distance = Util.distance(eye, entry.center)
+					distance = Util.distance(eye, point)
 					if settings.maxDistance > 0 and distance > settings.maxDistance then
 						drawIt = false
 					end
@@ -1572,20 +1545,16 @@ do
 					local minX, minY, maxX, maxY
 					local labelX, labelY
 
+					labelX, labelY = projectPoint(point)
+
 					if settings.box then
 						minX, minY, maxX, maxY = projectBounds(entry.minimum, entry.maximum)
-						if minX then
-							labelX, labelY = projectWorldLabel(entry)
-							if not labelX then
-								labelX = (minX + maxX) * 0.5
-								labelY = minY
-							end
+						if minX and not labelX then
+							labelX = (minX + maxX) * 0.5
+							labelY = minY
 						end
-					else
-						labelX, labelY = projectWorldLabel(entry)
-						if labelX then
-							minX, minY, maxX, maxY = labelX, labelY, labelX, labelY
-						end
+					elseif labelX then
+						minX, minY, maxX, maxY = labelX, labelY, labelX, labelY
 					end
 
 					if minX then
@@ -1612,7 +1581,7 @@ do
 									caption = caption .. " x" .. entry.count
 								end
 								if settings.distance then
-									caption = caption .. string.format("  [%dm]", math.floor(distance + 0.5))
+									caption = caption .. string.format("  [%3dm]", math.floor(distance + 0.5))
 								end
 
 								slot.text.Text = caption
