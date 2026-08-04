@@ -614,7 +614,7 @@ Config.path = "lurk/config.json"
 -- mergeDefaults only fills in missing keys, so a saved config would keep an old
 -- value forever after a default changes. Bump this whenever that must not
 -- happen and the stored file gets discarded instead.
-Config.version = 5
+Config.version = 6
 
 Config.defaults = {
 	version = Config.version,
@@ -836,7 +836,7 @@ do
 		tracer = false,
 		maxDistance = 0,
 		fontSize = 13,
-		rescanInterval = 3,
+		rescanInterval = 1,
 		color = { 55, 230, 140 },
 	}
 
@@ -1027,31 +1027,18 @@ do
 		return false
 	end
 
-	local function isUnderContainer(instance)
-		local current = instance.Parent
-		for _ = 1, 8 do
-			if not current or current == Workspace or current == game then
-				break
-			end
-
-			local name = string.lower(current.Name)
-			if string.find(name, "chest", 1, true)
-				or string.find(name, "storage", 1, true)
-				or string.find(name, "inventory", 1, true)
-				or string.find(name, "backpack", 1, true) then
-				return true
-			end
-
-			current = current.Parent
-		end
-		return false
-	end
-
 	local function scan(spec)
 		local found = {}
 		local stats = { candidates = 0, excluded = 0, unpositioned = 0, duplicates = 0 }
 
-		local descendants = Workspace and workspaceDescendants()
+		local descendants
+		if spec.scanList then
+			local ok, list = pcall(spec.scanList)
+			descendants = ok and list or {}
+		else
+			descendants = Workspace and workspaceDescendants()
+		end
+
 		if not descendants then
 			return found, stats
 		end
@@ -1072,34 +1059,49 @@ do
 				end
 
 				if pathOk and not isExcluded(path) and not pathMatches(path, spec.rejectPath) then
-					local root = descendant:IsA("Model") and descendant or nearestModel(descendant)
-					local part = anchorPart(descendant)
+					local root, part, minimum, maximum, center, span
 
-					if part or root then
-						local minimum, maximum = computeBounds(root, part)
-						if minimum then
-							local center = (minimum + maximum) * 0.5
-							local anchor = part and partExtents(part)
-
-							found[#found + 1] = {
-								instance = descendant,
-								root = root,
-								part = part,
-								minimum = minimum,
-								maximum = maximum,
-								center = center,
-								-- Kept so a moving object can be re-placed from its
-								-- anchor alone, without walking its parts again.
-								extent = (maximum - minimum) * 0.5,
-								anchorOffset = anchor and (center - anchor) or Vector3.zero,
-								span = (maximum - minimum).Magnitude,
-								path = path,
-								match = match,
-								count = 1,
-							}
-						else
-							stats.unpositioned = stats.unpositioned + 1
+					if spec.simplePart and descendant:IsA("BasePart") then
+						part = descendant
+						local position, size = partExtents(part)
+						if position then
+							local half = typeof(size) == "Vector3" and size * 0.5 or Vector3.new(0.5, 0.5, 0.5)
+							minimum = position - half
+							maximum = position + half
+							center = position
+							span = (maximum - minimum).Magnitude
 						end
+					else
+						root = descendant:IsA("Model") and descendant or nearestModel(descendant)
+						part = anchorPart(descendant)
+						if part or root then
+							minimum, maximum = computeBounds(root, part)
+							if minimum then
+								center = (minimum + maximum) * 0.5
+								span = (maximum - minimum).Magnitude
+							end
+						end
+					end
+
+					if minimum then
+						local anchor = part and partExtents(part)
+
+						found[#found + 1] = {
+							instance = descendant,
+							root = root,
+							part = part or descendant,
+							minimum = minimum,
+							maximum = maximum,
+							center = center,
+							extent = (maximum - minimum) * 0.5,
+							anchorOffset = anchor and (center - anchor) or Vector3.zero,
+							span = span,
+							path = path,
+							match = match,
+							count = 1,
+						}
+					else
+						stats.unpositioned = stats.unpositioned + 1
 					end
 				end
 			end
@@ -1245,13 +1247,9 @@ do
 			end
 		end
 
-		-- Objects that move need their box re-placed every frame. Recomputing it
-		-- from all parts would cost a descendant walk per object per frame, so the
-		-- box keeps its scanned size and only follows the anchor's position. An
-		-- instance that is gone reports no position and is skipped.
-		local function refresh(entry)
+		local function syncLive(entry)
 			if not entry.part then
-				return true
+				return entry.center ~= nil
 			end
 
 			local position = partExtents(entry.part)
@@ -1259,11 +1257,22 @@ do
 				return false
 			end
 
-			local center = position + entry.anchorOffset
-			entry.center = center
-			entry.minimum = center - entry.extent
-			entry.maximum = center + entry.extent
+			entry.center = position
+			if entry.extent then
+				entry.minimum = position - entry.extent
+				entry.maximum = position + entry.extent
+			end
 			return true
+		end
+
+		local function labelWorldPoint(entry)
+			if entry.part then
+				local position = partExtents(entry.part)
+				if position then
+					return position
+				end
+			end
+			return Vector3.new(entry.center.X, entry.maximum.Y, entry.center.Z)
 		end
 
 		function tracker.scan()
@@ -1300,7 +1309,7 @@ do
 				if drawIt and settings.hideOwnTeam and entry.isOwn then
 					drawIt = false
 				end
-				if drawIt and spec.dynamic and not refresh(entry) then
+				if drawIt and (spec.live or spec.dynamic) and not syncLive(entry) then
 					drawIt = false
 				end
 
@@ -1321,8 +1330,7 @@ do
 					if settings.box then
 						minX, minY, maxX, maxY = projectBounds(entry.minimum, entry.maximum)
 					else
-						local top = Vector3.new(entry.center.X, entry.maximum.Y, entry.center.Z)
-						local screen, onScreen = WorldToScreen(top)
+						local screen, onScreen = WorldToScreen(labelWorldPoint(entry))
 						if onScreen then
 							minX, minY, maxX, maxY = screen.X, screen.Y, screen.X, screen.Y
 						end
@@ -1494,34 +1502,38 @@ do
 		end,
 	}))
 
-	-- Only world ores count. Chests ship many emerald-named children for slots and
-	-- stored items — those must never be scanned or they show up as "EMERALD x14".
+	-- BedWars drops ores as BaseParts named "emerald" under Workspace.ItemDrops.
+	-- Scanning all of Workspace also picks up chest slots and blocks — those are
+	-- not ores. The amount comes from the Amount attribute, not a merge count.
 	Features.register("EmeraldESP", createTracker({
 		settingsKey = "emeraldEsp",
 		title = "Emerald ESP",
 		caption = "EMERALD",
-		mergeRadius = 4,
-		rejectPath = {
-			"chest", "echest", "enderchest", "teamchest", "storage", "inventory",
-			"backpack", "shop", "locker", "hotbar", "toolbar", "replicatedstorage",
-			"startergui", "playergui", "players.",
-		},
-		reject = {
-			"block", "brick", "wool", "plank", "wall", "floor", "stair", "slab",
-			"slot", "icon", "label", "button", "frame", "billboard", "viewport",
-			"image", "text", "gui", "template", "preview",
-		},
+		simplePart = true,
+		live = true,
+		mergeRadius = 0,
+		scanList = function()
+			local drops = Workspace and Workspace:FindFirstChild("ItemDrops")
+			if not drops then
+				return {}
+			end
+			local ok, children = pcall(function()
+				return drops:GetChildren()
+			end)
+			return ok and children or {}
+		end,
 		accept = function(instance, lowered)
-			if isUnderContainer(instance) then
-				return nil
+			return instance:IsA("BasePart") and lowered == "emerald"
+		end,
+		decorate = function(entry)
+			local ok, amount = pcall(function()
+				return entry.instance:GetAttribute("Amount")
+			end)
+			if ok and type(amount) == "number" and amount > 1 then
+				entry.caption = "EMERALD x" .. math.floor(amount)
+			else
+				entry.caption = "EMERALD"
 			end
-			if not (instance:IsA("BasePart") or instance:IsA("Model")) then
-				return nil
-			end
-			if string.find(lowered, "emerald", 1, true) then
-				return "name"
-			end
-			return nil
 		end,
 	}))
 end
