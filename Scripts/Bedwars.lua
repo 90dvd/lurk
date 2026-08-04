@@ -18,7 +18,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.6.6"
+local SCRIPT_VERSION = "1.6.7"
 
 --=============================================================================
 -- Environment
@@ -2504,7 +2504,7 @@ do
 		)
 
 		source = source:gsub(
-			"Outline = false })",
+			"Outline = false %})",
 			"Outline = true }) -- lurk: matcha text outline"
 		)
 

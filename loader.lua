@@ -13,7 +13,7 @@ local BASE = "https://raw.githubusercontent.com/90dvd/lurk/main/Scripts/Bedwars.
 -- Bypasses raw.githubusercontent.com/main/ CDN lag (update on each release).
 local FALLBACK = "https://raw.githubusercontent.com/90dvd/lurk/d61777c/Scripts/Bedwars.lua"
 local CACHE = "lurk/Bedwars.lua"
-local MIN_VERSION = "1.6.6"
+local MIN_VERSION = "1.6.7"
 
 local function fetch(url)
 	local body
