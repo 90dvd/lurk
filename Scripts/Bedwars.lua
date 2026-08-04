@@ -14,7 +14,7 @@
 	The public handle is the `_G.LURK` global set at the bottom.
 ]]
 
-local SCRIPT_VERSION = "1.5.3"
+local SCRIPT_VERSION = "1.5.4"
 
 --=============================================================================
 -- Environment
@@ -496,25 +496,21 @@ function Input.released(keycode)
 	return currentState[keycode] ~= true and previousState[keycode] == true
 end
 
--- Shift menu: sample side-specific VKs on the generic shift edge so left sprint
--- (often only VK 0x10) does not toggle the GUI when Matcha lacks VK 0xA0/0xA1.
-local shiftMenuPrev = false
+-- Right-shift menu: react on VK 0xA1 edge directly (instant). Left sprint usually
+-- only sets VK 0x10, so it never triggers; block VK 0xA0 if Matcha reports it.
+local shiftMenuPrevRight = false
 
 function Input.consumeRightShiftMenuEdge()
-	local generic = iskeypressed(Input.VK.SHIFT) == true
 	local left = iskeypressed(Input.VK.LSHIFT) == true
 	local right = iskeypressed(Input.VK.RSHIFT) == true
-	local edge = generic and not shiftMenuPrev
+	local edge = right and not shiftMenuPrevRight
 
-	shiftMenuPrev = generic
+	shiftMenuPrevRight = right
 
-	if not edge then
+	if not edge or left then
 		return false
 	end
-	if left then
-		return false
-	end
-	return right
+	return true
 end
 
 function Input.prepareKeys(keycodes)
@@ -2579,13 +2575,13 @@ local function main()
 		Runtime.unload()
 	end)
 
-	-- Draw ESP before input so WorldToScreen matches the current camera frame.
+	-- Menu input before ESP work so Right Shift feels instant.
 	Runtime.onRender(function()
 		Runtime.frame = Runtime.frame + 1
+		GUI.pollMenuToggle()
 		Features.flushRender()
 		Input.update()
 		runBinds()
-		GUI.pollMenuToggle()
 	end, "frame")
 
 	for _, feature in pairs(Features.list) do
